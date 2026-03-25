@@ -1,0 +1,6 @@
+medical:
+  rag:
+    vector-store:
+      type: simple
+    retrieval:
+      strategy: vector

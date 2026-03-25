@@ -1,0 +1,11 @@
+spring:
+  ai:
+    dashscope:
+      api-key: test-key
+medical:
+  rag:
+    vector-store:
+      type: simple
+      manifest-file: target/test-rag/knowledge-manifest.json
+      simple:
+        store-file: target/test-rag/simple-vector-store.json

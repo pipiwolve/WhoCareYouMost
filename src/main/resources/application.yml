@@ -1,0 +1,95 @@
+spring:
+  application:
+    name: MedicalAgent
+  ai:
+    model:
+      embedding: none
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY}
+      embedding:
+        options:
+          model: text-embedding-v2
+          dimensions: 1536
+    vectorstore:
+      elasticsearch:
+        initialize-schema: true
+        index-name: medical-rag
+        dimensions: 1536
+        similarity: cosine
+  elasticsearch:
+    uris: ${MEDICAL_ES_URIS:http://localhost:9200}
+    username: ${MEDICAL_ES_USERNAME:}
+    password: ${MEDICAL_ES_PASSWORD:}
+server:
+  port: 8123
+  servlet:
+    context-path: /api
+
+logging:
+  level:
+    org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor: debug
+    com.tay.medicalagent.interceptor.MyLogModelInterceptor: debug
+    com.tay.medicalagent.app.rag.hook.MedicalRagAgentHook: debug
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-docs:
+    path: /v3/api-docs
+  group-configs:
+    - group: 'default'
+      paths-to-match: '/**'
+      packages-to-scan: com.tay.medicalagent.controller
+
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+
+medical:
+  web:
+    allowed-origins:
+      - http://localhost:3000
+      - http://localhost:5173
+  rag:
+    enabled: true
+    bootstrap-on-startup: false
+    context-metadata-key: rag_context
+    applied-metadata-key: rag_applied
+    vector-store:
+      type: elasticsearch
+      manifest-file: data/medical-rag/knowledge-manifest.json
+      simple:
+        store-file: data/medical-rag/simple-vector-store.json
+    ingestion:
+      resource-location: classpath*:knowledge-base/medical/**/*
+      token-splitter:
+        chunk-size: 800
+        min-chunk-size-chars: 350
+        min-chunk-length-to-embed: 5
+        max-num-chunks: 10000
+        keep-separator: true
+      keyword:
+        enabled: true
+        count: 5
+      summary:
+        enabled: true
+        types:
+          - CURRENT
+        metadata-mode: INFERENCE
+    retrieval:
+      top-k: 5
+      similarity-threshold: 0.35
+      max-context-chars: 4000
+      elasticsearch-hybrid:
+        vector-top-k: 20
+        lexical-top-k: 20
+        rank-constant: 60
+        title-boost: 2.5
+        section-boost: 2.0
+        content-boost: 1.0
+    evaluation:
+      dataset-location: classpath:evaluation/medical-rag-eval.json
+      top-k: 5

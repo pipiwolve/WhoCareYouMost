@@ -1,0 +1,20 @@
+[
+  {
+    "id": "eval-chest-pain",
+    "question": "持续胸痛二十分钟，伴出汗和恶心，现在应该怎么办？",
+    "expectedSourceIds": ["kb-chest-pain-triage"],
+    "expectedKeywords": ["胸痛", "急诊", "出汗"]
+  },
+  {
+    "id": "eval-fever-breathing",
+    "question": "发烧三十九度伴咳嗽，如果今晚胸闷气喘加重什么时候必须去医院？",
+    "expectedSourceIds": ["kb-fever-respiratory-care"],
+    "expectedKeywords": ["三十九", "气喘", "尽快就医"]
+  },
+  {
+    "id": "eval-penicillin-allergy",
+    "question": "我对青霉素过敏，还能自己随便吃抗生素吗？",
+    "expectedSourceIds": ["kb-drug-allergy-antibiotic"],
+    "expectedKeywords": ["青霉素", "过敏", "抗菌药"]
+  }
+]
