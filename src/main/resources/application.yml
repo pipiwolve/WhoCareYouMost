@@ -6,6 +6,9 @@ spring:
       embedding: none
     dashscope:
       api-key: ${DASHSCOPE_API_KEY}
+      chat:
+        options:
+          model: qwen-max
       embedding:
         options:
           model: text-embedding-v2
@@ -30,6 +33,8 @@ logging:
     org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor: debug
     com.tay.medicalagent.interceptor.MyLogModelInterceptor: debug
     com.tay.medicalagent.app.rag.hook.MedicalRagAgentHook: debug
+    com.tay.medicalagent.app.rag.retrieval.ElasticsearchHybridSearchClient: debug
+    com.tay.medicalagent.app.rag.interceptor.MedicalRagContextInterceptor: debug
 
 springdoc:
   swagger-ui:
@@ -61,6 +66,8 @@ medical:
     vector-store:
       type: elasticsearch
       manifest-file: data/medical-rag/knowledge-manifest.json
+      elasticsearch:
+        fallback-to-simple-on-startup-failure: true
       simple:
         store-file: data/medical-rag/simple-vector-store.json
     ingestion:
@@ -72,10 +79,10 @@ medical:
         max-num-chunks: 10000
         keep-separator: true
       keyword:
-        enabled: true
+        enabled: false
         count: 5
       summary:
-        enabled: true
+        enabled: false
         types:
           - CURRENT
         metadata-mode: INFERENCE
@@ -93,3 +100,6 @@ medical:
     evaluation:
       dataset-location: classpath:evaluation/medical-rag-eval.json
       top-k: 5
+  report:
+    pdf:
+      font-path: ${MEDICAL_REPORT_PDF_FONT_PATH:}

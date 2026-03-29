@@ -8,6 +8,7 @@ import org.springframework.boot.context.properties.source.MapConfigurationProper
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MedicalRagPropertiesBindingTest {
 
@@ -16,6 +17,7 @@ class MedicalRagPropertiesBindingTest {
         Binder binder = new Binder(new MapConfigurationPropertySource(Map.of(
                 "medical.rag.vector-store.type", "elasticsearch",
                 "medical.rag.vector-store.manifest-file", "/tmp/knowledge-manifest.json",
+                "medical.rag.vector-store.elasticsearch.fallback-to-simple-on-startup-failure", "true",
                 "medical.rag.retrieval.strategy", "elasticsearch_hybrid",
                 "medical.rag.retrieval.elasticsearch-hybrid.vector-top-k", "32",
                 "medical.rag.retrieval.elasticsearch-hybrid.lexical-top-k", "24",
@@ -28,6 +30,7 @@ class MedicalRagPropertiesBindingTest {
 
         assertEquals("elasticsearch", properties.getVectorStore().getType());
         assertEquals("/tmp/knowledge-manifest.json", properties.getVectorStore().getManifestFile());
+        assertTrue(properties.getVectorStore().getElasticsearch().isFallbackToSimpleOnStartupFailure());
         assertEquals("elasticsearch_hybrid", properties.getRetrieval().getStrategy());
         assertEquals(32, properties.getRetrieval().getElasticsearchHybrid().getVectorTopK());
         assertEquals(24, properties.getRetrieval().getElasticsearchHybrid().getLexicalTopK());

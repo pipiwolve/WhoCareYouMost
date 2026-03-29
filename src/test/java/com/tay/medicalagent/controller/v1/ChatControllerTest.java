@@ -5,7 +5,8 @@ import com.tay.medicalagent.app.MedicalApp;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
 import com.tay.medicalagent.app.chat.StructuredMedicalReply;
 import com.tay.medicalagent.app.rag.model.KnowledgeSource;
-import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.service.model.MedicalModelConfigurationException;
+import com.tay.medicalagent.app.service.report.ReportTriggerLevel;
 import com.tay.medicalagent.session.ConsultationSession;
 import com.tay.medicalagent.session.ConsultationSessionService;
 import com.tay.medicalagent.web.support.GlobalExceptionHandler;
@@ -21,8 +22,6 @@ import org.springframework.test.web.servlet.MvcResult;
 import java.util.List;
 
 import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.greaterThanOrEqualTo;
-import static org.hamcrest.Matchers.startsWith;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
@@ -112,7 +111,9 @@ class ChatControllerTest {
                 "usr_2",
                 "建议多休息。",
                 true,
-                "当前回复已经形成风险判断或排查方向，可生成诊断报告。",
+                "当前问诊信息较完整，可按需生成诊断报告。",
+                ReportTriggerLevel.SUGGESTED,
+                "当前问诊信息较完整，可按需生成诊断报告。",
                 false,
                 null,
                 true,
@@ -142,6 +143,9 @@ class ChatControllerTest {
                 .andExpect(jsonPath("$.data.reply").value("建议多休息。"))
                 .andExpect(jsonPath("$.data.structuredReply.summary").value("建议多休息。"))
                 .andExpect(jsonPath("$.data.reportAvailable").value(true))
+                .andExpect(jsonPath("$.data.reportReason").value("当前问诊信息较完整，可按需生成诊断报告。"))
+                .andExpect(jsonPath("$.data.reportTriggerLevel").value("suggested"))
+                .andExpect(jsonPath("$.data.reportActionText").value("当前问诊信息较完整，可按需生成诊断报告。"))
                 .andExpect(jsonPath("$.data.sources[0].sourceId").value("kb-1"))
                 .andExpect(jsonPath("$.data.sources[0].title").value("胸痛处理"))
                 .andExpect(jsonPath("$.data.sources[0].uri").doesNotExist());
@@ -168,6 +172,29 @@ class ChatControllerTest {
     }
 
     @Test
+    void completeJsonShouldExposeModelConfigurationError() throws Exception {
+        ConsultationSession consultationSession = consultationSessionService.createSession("usr_cfg", "thread_cfg");
+        when(medicalApp.doChat("我头晕", "thread_cfg", "usr_cfg"))
+                .thenThrow(new MedicalModelConfigurationException(
+                        "缺少 DashScope API Key，请配置 DASHSCOPE_API_KEY 或 AI_DASHSCOPE_API_KEY"
+                ));
+
+        mockMvc.perform(post("/v1/chat/completions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "sessionId": "%s",
+                                  "message": "我头晕"
+                                }
+                                """.formatted(consultationSession.sessionId())))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.code").value(500))
+                .andExpect(jsonPath("$.message")
+                        .value("缺少 DashScope API Key，请配置 DASHSCOPE_API_KEY 或 AI_DASHSCOPE_API_KEY"));
+    }
+
+    @Test
     void completeStreamShouldEmitMetaChunkAndDone() throws Exception {
         ConsultationSession consultationSession = consultationSessionService.createSession("usr_4", "thread_4");
         StructuredMedicalReply structuredReply = new StructuredMedicalReply(
@@ -184,6 +211,8 @@ class ChatControllerTest {
                 "usr_4",
                 "根据您的情况，建议多休息。",
                 false,
+                "",
+                ReportTriggerLevel.NONE,
                 "",
                 false,
                 null,
@@ -205,6 +234,7 @@ class ChatControllerTest {
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
+        mvcResult.getAsyncResult(1000);
         MvcResult asyncResult = mockMvc.perform(asyncDispatch(mvcResult))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM))
@@ -238,6 +268,7 @@ class ChatControllerTest {
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
+        mvcResult.getAsyncResult(1000);
         MvcResult asyncResult = mockMvc.perform(asyncDispatch(mvcResult))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString("event:meta")))
@@ -248,5 +279,37 @@ class ChatControllerTest {
         assertTrue(payload.indexOf("event:meta") < payload.indexOf("event:error"));
         assertTrue(!payload.contains("event:done"));
         assertTrue(payload.contains("SESSION_NOT_FOUND"));
+    }
+
+    @Test
+    void completeStreamShouldExposeModelConfigurationError() throws Exception {
+        ConsultationSession consultationSession = consultationSessionService.createSession("usr_cfg_2", "thread_cfg_2");
+        when(medicalApp.doChat("我头晕", "thread_cfg_2", "usr_cfg_2"))
+                .thenThrow(new MedicalModelConfigurationException(
+                        "缺少 DashScope API Key，请配置 DASHSCOPE_API_KEY 或 AI_DASHSCOPE_API_KEY"
+                ));
+
+        MvcResult mvcResult = mockMvc.perform(post("/v1/chat/completions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.TEXT_EVENT_STREAM)
+                        .content("""
+                                {
+                                  "sessionId": "%s",
+                                  "message": "我头晕"
+                                }
+                                """.formatted(consultationSession.sessionId())))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mvcResult.getAsyncResult(1000);
+        MvcResult asyncResult = mockMvc.perform(asyncDispatch(mvcResult))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String payload = asyncResult.getResponse().getContentAsString();
+        assertTrue(payload.contains("event:error"));
+        assertTrue(payload.contains("MODEL_CONFIG_ERROR"));
+        assertTrue(payload.contains("DASHSCOPE_API_KEY"));
+        assertTrue(payload.contains("AI_DASHSCOPE_API_KEY"));
     }
 }

@@ -2,8 +2,10 @@ package com.tay.medicalagent.controller.v1;
 
 import com.tay.medicalagent.app.MedicalApp;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalReportPdfFile;
 import com.tay.medicalagent.session.ConsultationSession;
 import com.tay.medicalagent.session.ConsultationSessionService;
+import com.tay.medicalagent.app.service.report.ReportNotExportableException;
 import com.tay.medicalagent.web.support.GlobalExceptionHandler;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,7 +17,10 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.util.List;
 
 import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.startsWith;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.mockito.Mockito.when;
@@ -92,5 +97,49 @@ class ReportControllerTest {
                 .andExpect(jsonPath("$.data.report.recommendations[0]").value("补液休息"))
                 .andExpect(jsonPath("$.data.report.redFlags[0]").value("持续高热"))
                 .andExpect(jsonPath("$.data.report.disclaimer").value("本报告由AI生成，仅供参考，不能替代专业医生诊断。"));
+    }
+
+    @Test
+    void downloadReportPdfShouldReturn404WhenSessionMissing() throws Exception {
+        mockMvc.perform(get("/v1/reports/sess_missing/pdf"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("会话不存在"));
+    }
+
+    @Test
+    void downloadReportPdfShouldReturn409WhenReportNotReady() throws Exception {
+        ConsultationSession consultationSession = consultationSessionService.createSession("usr_pdf_1", "thread_pdf_1");
+        when(medicalApp.exportReportPdf(
+                eq(consultationSession.sessionId()),
+                eq("thread_pdf_1"),
+                eq("usr_pdf_1")
+        )).thenThrow(new ReportNotExportableException("当前会话暂无可导出的诊断报告"));
+
+        mockMvc.perform(get("/v1/reports/{sessionId}/pdf", consultationSession.sessionId()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("当前会话暂无可导出的诊断报告"));
+    }
+
+    @Test
+    void downloadReportPdfShouldReturnPdfBytes() throws Exception {
+        ConsultationSession consultationSession = consultationSessionService.createSession("usr_pdf_2", "thread_pdf_2");
+        when(medicalApp.exportReportPdf(
+                eq(consultationSession.sessionId()),
+                eq("thread_pdf_2"),
+                eq("usr_pdf_2")
+        )).thenReturn(new MedicalReportPdfFile(
+                "medical-report-" + consultationSession.sessionId() + ".pdf",
+                "application/pdf",
+                "%PDF-test".getBytes()
+        ));
+
+        mockMvc.perform(get("/v1/reports/{sessionId}/pdf", consultationSession.sessionId()))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("application/pdf"))
+                .andExpect(content().string(startsWith("%PDF")))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                        .string("Content-Disposition", "attachment; filename=\"medical-report-" + consultationSession.sessionId() + ".pdf\""))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                        .string("Cache-Control", org.hamcrest.Matchers.containsString("no-store")));
     }
 }

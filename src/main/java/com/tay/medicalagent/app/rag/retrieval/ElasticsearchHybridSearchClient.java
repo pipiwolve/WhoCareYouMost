@@ -54,19 +54,50 @@ public class ElasticsearchHybridSearchClient {
 
     public List<Document> search(String normalizedQuery) {
         List<Document> vectorDocuments = vectorSearch(normalizedQuery);
+        if (log.isDebugEnabled()) {
+            log.debug(
+                    "Hybrid retrieval vector phase completed. query={}, candidateCount={}, candidates={}",
+                    normalizedQuery,
+                    vectorDocuments.size(),
+                    summarizeDocuments(vectorDocuments)
+            );
+        }
+
         RestClient restClient = restClientProvider.getIfAvailable();
         if (restClient == null) {
+            if (log.isDebugEnabled()) {
+                log.debug("Hybrid retrieval lexical phase skipped because RestClient is unavailable. query={}", normalizedQuery);
+            }
             return limit(vectorDocuments);
         }
 
         try {
             List<Document> lexicalDocuments = lexicalSearch(restClient, normalizedQuery);
-            return ReciprocalRankFusion.fuse(
+            if (log.isDebugEnabled()) {
+                log.debug(
+                        "Hybrid retrieval lexical phase completed. query={}, candidateCount={}, candidates={}",
+                        normalizedQuery,
+                        lexicalDocuments.size(),
+                        summarizeDocuments(lexicalDocuments)
+                );
+            }
+
+            List<Document> fusedDocuments = ReciprocalRankFusion.fuse(
                     vectorDocuments,
                     lexicalDocuments,
                     medicalRagProperties.getRetrieval().getTopK(),
                     medicalRagProperties.getRetrieval().getElasticsearchHybrid().getRankConstant()
             );
+            if (log.isDebugEnabled()) {
+                log.debug(
+                        "Hybrid retrieval fused result completed. query={}, topK={}, resultCount={}, results={}",
+                        normalizedQuery,
+                        medicalRagProperties.getRetrieval().getTopK(),
+                        fusedDocuments.size(),
+                        summarizeDocuments(fusedDocuments)
+                );
+            }
+            return fusedDocuments;
         }
         catch (IOException ex) {
             log.warn("Elasticsearch hybrid lexical search failed, fallback to vector-only retrieval", ex);
@@ -148,5 +179,37 @@ public class ElasticsearchHybridSearchClient {
     private List<Document> limit(List<Document> documents) {
         int limit = Math.max(1, medicalRagProperties.getRetrieval().getTopK());
         return documents.stream().limit(limit).toList();
+    }
+
+    private String summarizeDocuments(List<Document> documents) {
+        if (documents == null || documents.isEmpty()) {
+            return "[]";
+        }
+
+        return documents.stream()
+                .limit(8)
+                .map(document -> "{id=%s,score=%.4f,sourceId=%s,section=%s}".formatted(
+                        safeText(document.getId()),
+                        document.getScore(),
+                        readMetadata(document, "sourceId"),
+                        readMetadata(document, "section")
+                ))
+                .toList()
+                .toString();
+    }
+
+    private String readMetadata(Document document, String key) {
+        if (document == null || document.getMetadata() == null) {
+            return "";
+        }
+        Object value = document.getMetadata().get(key);
+        return value == null ? "" : safeText(value.toString());
+    }
+
+    private String safeText(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.trim();
     }
 }

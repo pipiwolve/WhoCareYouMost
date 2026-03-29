@@ -3,6 +3,7 @@ package com.tay.medicalagent.controller.v1;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.tay.medicalagent.app.MedicalApp;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
+import com.tay.medicalagent.app.service.model.MedicalModelConfigurationException;
 import com.tay.medicalagent.session.ConsultationSession;
 import com.tay.medicalagent.session.ConsultationSessionService;
 import com.tay.medicalagent.web.dto.ChatCompletionRequest;
@@ -130,6 +131,9 @@ public class ChatController {
         if (ex instanceof UnsupportedAttachmentsException) {
             return "UNSUPPORTED_ATTACHMENTS";
         }
+        if (ex instanceof MedicalModelConfigurationException) {
+            return "MODEL_CONFIG_ERROR";
+        }
         if (ex instanceof GraphRunnerException) {
             return "CHAT_RUNTIME_ERROR";
         }
@@ -138,6 +142,9 @@ public class ChatController {
 
     private String resolveErrorMessage(Exception ex) {
         if (ex instanceof SessionNotFoundException || ex instanceof UnsupportedAttachmentsException) {
+            return ex.getMessage();
+        }
+        if (ex instanceof MedicalModelConfigurationException) {
             return ex.getMessage();
         }
         if (ex instanceof GraphRunnerException) {

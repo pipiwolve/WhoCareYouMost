@@ -1,8 +1,10 @@
 package com.tay.medicalagent.app.service.model;
 
 import com.alibaba.cloud.ai.dashscope.api.DashScopeApi;
+import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -13,8 +15,13 @@ import org.springframework.stereotype.Component;
  */
 public class MedicalAiModelProvider {
 
+    private static final String DEFAULT_CHAT_MODEL = "qwen-max";
+
     private volatile DashScopeApi dashScopeApi;
     private volatile ChatModel chatModel;
+
+    @Value("${spring.ai.dashscope.chat.options.model:" + DEFAULT_CHAT_MODEL + "}")
+    private String configuredChatModel;
 
     public ChatModel getChatModel() {
         if (chatModel == null) {
@@ -22,6 +29,7 @@ public class MedicalAiModelProvider {
                 if (chatModel == null) {
                     chatModel = DashScopeChatModel.builder()
                             .dashScopeApi(getDashScopeApi())
+                            .defaultOptions(DashScopeChatOptions.builder().model(configuredChatModel).build())
                             .build();
                 }
             }
@@ -63,6 +71,8 @@ public class MedicalAiModelProvider {
             return legacyApiKey;
         }
 
-        throw new IllegalStateException("缺少 DashScope API Key，请配置 DASHSCOPE_API_KEY 或 AI_DASHSCOPE_API_KEY");
+        throw new MedicalModelConfigurationException(
+                "缺少 DashScope API Key，请配置 DASHSCOPE_API_KEY 或 AI_DASHSCOPE_API_KEY"
+        );
     }
 }

@@ -22,7 +22,7 @@ public class HttpAiInvoke {
         }
 
         Map<String, Object> requestBody = Map.of(
-                "model", "qwen-plus",
+                "model", "qwen-max",
                 "input", Map.of(
                         "messages", List.of(
                                 Map.of(

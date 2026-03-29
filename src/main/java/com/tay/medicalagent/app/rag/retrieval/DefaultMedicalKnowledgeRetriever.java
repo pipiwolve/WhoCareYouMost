@@ -4,10 +4,12 @@ import com.tay.medicalagent.app.rag.config.MedicalRagProperties;
 import com.tay.medicalagent.app.rag.model.KnowledgeSource;
 import com.tay.medicalagent.app.rag.model.RagContext;
 import com.tay.medicalagent.app.rag.model.RetrievedPassage;
+import com.tay.medicalagent.app.rag.vectorstore.ElasticsearchBackedVectorStore;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.elasticsearch.ElasticsearchVectorStore;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -67,15 +69,24 @@ public class DefaultMedicalKnowledgeRetriever implements MedicalKnowledgeRetriev
         String strategy = medicalRagProperties.getRetrieval()
                 .resolveStrategy(medicalRagProperties.getVectorStore().getType());
 
-        if ("elasticsearch_hybrid".equalsIgnoreCase(strategy)) {
+        if ("elasticsearch_hybrid".equalsIgnoreCase(strategy) && isElasticsearchBackedStore()) {
             return elasticsearchHybridSearchClient.search(normalizedQuery);
         }
 
+        return vectorSimilaritySearch(normalizedQuery);
+    }
+
+    private List<Document> vectorSimilaritySearch(String normalizedQuery) {
         return vectorStore.similaritySearch(SearchRequest.builder()
                 .query(normalizedQuery)
                 .topK(medicalRagProperties.getRetrieval().getTopK())
                 .similarityThreshold(medicalRagProperties.getRetrieval().getSimilarityThreshold())
                 .build());
+    }
+
+    private boolean isElasticsearchBackedStore() {
+        return vectorStore instanceof ElasticsearchVectorStore
+                || vectorStore instanceof ElasticsearchBackedVectorStore;
     }
 
     private RetrievedPassage toPassage(Document document) {

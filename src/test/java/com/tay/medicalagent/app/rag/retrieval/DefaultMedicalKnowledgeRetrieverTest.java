@@ -14,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class DefaultMedicalKnowledgeRetrieverTest {
@@ -77,6 +78,42 @@ class DefaultMedicalKnowledgeRetrieverTest {
         assertEquals(2, ragContext.sources().size());
         assertTrue(ragContext.contextText().contains("kb-dizziness-syncope-triage"));
         assertEquals(1, countOccurrences(ragContext.contextText(), "kb-dizziness-syncope-triage"));
+    }
+
+    @Test
+    void shouldFallbackToVectorSearchWhenConfiguredHybridButStoreIsNotElasticsearchBacked() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        MedicalQueryBuilder medicalQueryBuilder = mock(MedicalQueryBuilder.class);
+        ElasticsearchHybridSearchClient elasticsearchHybridSearchClient = mock(ElasticsearchHybridSearchClient.class);
+        MedicalRagProperties properties = new MedicalRagProperties();
+        properties.getVectorStore().setType("elasticsearch");
+
+        when(medicalQueryBuilder.normalizeQuery(any(String.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Document document = mock(Document.class);
+        when(document.getId()).thenReturn("doc-1");
+        when(document.getText()).thenReturn("体位性低血压建议");
+        when(document.getScore()).thenReturn(0.83);
+        when(document.getMetadata()).thenReturn(Map.of(
+                "sourceId", "kb-orthostatic-hypotension",
+                "title", "头晕与直立性低血压",
+                "section", "处理建议"
+        ));
+
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(document));
+
+        DefaultMedicalKnowledgeRetriever retriever = new DefaultMedicalKnowledgeRetriever(
+                vectorStore,
+                medicalQueryBuilder,
+                properties,
+                elasticsearchHybridSearchClient
+        );
+
+        RagContext ragContext = retriever.retrieve("站起来后头晕");
+
+        assertEquals(1, ragContext.passages().size());
+        assertTrue(ragContext.contextText().contains("kb-orthostatic-hypotension"));
+        verifyNoInteractions(elasticsearchHybridSearchClient);
     }
 
     private int countOccurrences(String text, String token) {

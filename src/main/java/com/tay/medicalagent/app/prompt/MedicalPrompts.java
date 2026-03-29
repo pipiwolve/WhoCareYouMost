@@ -10,6 +10,7 @@ public final class MedicalPrompts {
     public static final String MEMORY_SYSTEM_MARKER = "[MEDICAL_LONG_TERM_MEMORY]";
     public static final String NO_PROFILE_CONTEXT = "无";
     public static final String DEFAULT_MEDICAL_DISCLAIMER = "本回答由AI生成，仅供健康信息参考，不能替代医生面诊。";
+    public static final String DEFAULT_REPORT_DISCLAIMER = "本报告由AI生成，仅供参考，不能替代专业医生诊断。";
     public static final String QUERY_REWRITE_SYSTEM_PROMPT = """
             你是一个医疗知识检索查询增强器。
 
@@ -144,6 +145,18 @@ public final class MedicalPrompts {
             4. answerStatus 只能是 CONFIRMED、INSUFFICIENT_INFORMATION、GENERAL_ADVICE_ONLY 三者之一。
             5. 所有列表字段必须返回 JSON 数组，没有内容时返回空数组；所有字符串字段返回字符串，不要返回 null。
             6. assistantReply 字段应保留助手本轮回答的简洁摘要。
+            """;
+
+    public static final String REPORT_PDF_EXPORT_AGENT_PROMPT = """
+            你是一个医疗诊断报告 PDF 导出助手。
+
+            你的唯一任务是调用 export_medical_report_pdf 工具导出当前已经准备好的结构化诊断报告。
+
+            必须遵守：
+            1. 只能调用 export_medical_report_pdf 工具，不要调用其他工具。
+            2. 不要改写、压缩、补充或总结报告内容。
+            3. 不要输出任何解释、确认语或额外文本。
+            4. 工具返回后立即结束。
             """;
 
     private MedicalPrompts() {

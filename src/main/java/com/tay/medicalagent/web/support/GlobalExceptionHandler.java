@@ -1,6 +1,9 @@
 package com.tay.medicalagent.web.support;
 
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
+import com.tay.medicalagent.app.service.report.ReportExportException;
+import com.tay.medicalagent.app.service.report.ReportNotExportableException;
+import com.tay.medicalagent.app.service.model.MedicalModelConfigurationException;
 import io.swagger.v3.oas.annotations.Hidden;
 import jakarta.validation.ConstraintViolationException;
 import org.springframework.http.HttpStatus;
@@ -55,10 +58,28 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, ex.getMessage());
     }
 
+    @ExceptionHandler(ReportNotExportableException.class)
+    @Hidden
+    public ResponseEntity<ApiResponse<Void>> handleReportNotExportable(ReportNotExportableException ex) {
+        return build(HttpStatus.CONFLICT, ex.getMessage());
+    }
+
     @ExceptionHandler(GraphRunnerException.class)
     @Hidden
     public ResponseEntity<ApiResponse<Void>> handleGraphRunnerException(GraphRunnerException ex) {
         return build(HttpStatus.INTERNAL_SERVER_ERROR, "问诊生成失败");
+    }
+
+    @ExceptionHandler(MedicalModelConfigurationException.class)
+    @Hidden
+    public ResponseEntity<ApiResponse<Void>> handleMedicalModelConfigurationException(MedicalModelConfigurationException ex) {
+        return build(HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage());
+    }
+
+    @ExceptionHandler(ReportExportException.class)
+    @Hidden
+    public ResponseEntity<ApiResponse<Void>> handleReportExportException(ReportExportException ex) {
+        return build(HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage());
     }
 
     @ExceptionHandler(Exception.class)

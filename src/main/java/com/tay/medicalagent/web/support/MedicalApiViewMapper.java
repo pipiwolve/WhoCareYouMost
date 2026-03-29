@@ -4,6 +4,7 @@ import com.tay.medicalagent.app.chat.MedicalChatResult;
 import com.tay.medicalagent.app.chat.StructuredMedicalReply;
 import com.tay.medicalagent.app.rag.model.KnowledgeSource;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.prompt.MedicalPrompts;
 import com.tay.medicalagent.web.dto.ChatCompletionResponse;
 import com.tay.medicalagent.web.dto.KnowledgeSourceView;
 import com.tay.medicalagent.web.dto.ReportQueryResponse;
@@ -20,15 +21,17 @@ import java.util.List;
 public class MedicalApiViewMapper {
 
     private static final String DEFAULT_REPORT_UNAVAILABLE_REASON = "当前会话暂无足够问诊内容";
-    private static final String DEFAULT_DISCLAIMER = "本报告由AI生成，仅供参考，不能替代专业医生诊断。";
+    private static final String DEFAULT_DISCLAIMER = MedicalPrompts.DEFAULT_REPORT_DISCLAIMER;
 
     public ChatCompletionResponse toChatCompletionResponse(String sessionId, MedicalChatResult medicalChatResult) {
         return new ChatCompletionResponse(
                 sessionId,
                 safeText(medicalChatResult.reply()),
                 toStructuredReplyView(medicalChatResult.structuredReply()),
-                medicalChatResult.reportAvailable(),
-                safeText(medicalChatResult.reportReason()),
+                medicalChatResult.effectiveReportAvailable(),
+                safeText(medicalChatResult.effectiveReportReason()),
+                safeText(medicalChatResult.effectiveReportTriggerLevel()),
+                safeText(medicalChatResult.effectiveReportActionText()),
                 medicalChatResult.reportGenerated(),
                 toReportViewNullable(medicalChatResult.report()),
                 medicalChatResult.ragApplied(),

@@ -6,6 +6,8 @@ import com.alibaba.cloud.ai.graph.agent.interceptor.ModelRequest;
 import com.alibaba.cloud.ai.graph.agent.interceptor.ModelResponse;
 import com.tay.medicalagent.app.rag.config.MedicalRagProperties;
 import com.tay.medicalagent.app.rag.model.RagContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.stereotype.Component;
 
@@ -17,6 +19,8 @@ import org.springframework.stereotype.Component;
  * 让生成阶段显式感知知识库依据。
  */
 public class MedicalRagContextInterceptor extends ModelInterceptor {
+
+    private static final Logger log = LoggerFactory.getLogger(MedicalRagContextInterceptor.class);
 
     private final MedicalRagProperties medicalRagProperties;
 
@@ -37,7 +41,19 @@ public class MedicalRagContextInterceptor extends ModelInterceptor {
 
         Object ragContextValue = request.getContext().get(medicalRagProperties.getContextMetadataKey());
         if (!(ragContextValue instanceof RagContext ragContext) || !ragContext.applied()) {
+            if (log.isDebugEnabled()) {
+                log.debug("Skip RAG context injection because no applied RAG context is present.");
+            }
             return handler.call(request);
+        }
+
+        if (log.isDebugEnabled()) {
+            log.debug(
+                    "Injecting RAG context into model request. query={}, sourceCount={}, contextChars={}",
+                    ragContext.query(),
+                    ragContext.sources().size(),
+                    ragContext.contextText() == null ? 0 : ragContext.contextText().length()
+            );
         }
 
         String ragSystemPrompt = """

@@ -11,6 +11,8 @@ public record ChatCompletionResponse(
         StructuredReplyView structuredReply,
         boolean reportAvailable,
         String reportReason,
+        String reportTriggerLevel,
+        String reportActionText,
         boolean reportGenerated,
         ReportViewDto report,
         boolean ragApplied,

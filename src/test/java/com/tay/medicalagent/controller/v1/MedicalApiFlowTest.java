@@ -6,6 +6,7 @@ import com.tay.medicalagent.app.MedicalApp;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
 import com.tay.medicalagent.app.chat.StructuredMedicalReply;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.service.report.ReportTriggerLevel;
 import com.tay.medicalagent.web.support.GlobalExceptionHandler;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -63,7 +64,9 @@ class MedicalApiFlowTest {
                 userId,
                 "建议先休息并补充水分。",
                 true,
-                "当前回复已经形成风险判断或排查方向，可生成诊断报告。",
+                "当前问诊信息较完整，可按需生成诊断报告。",
+                ReportTriggerLevel.SUGGESTED,
+                "当前问诊信息较完整，可按需生成诊断报告。",
                 false,
                 null,
                 false,
@@ -91,7 +94,9 @@ class MedicalApiFlowTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.sessionId").value(sessionId))
                 .andExpect(jsonPath("$.data.reply").value("建议先休息并补充水分。"))
-                .andExpect(jsonPath("$.data.structuredReply.summary").value("建议先休息并补充水分。"));
+                .andExpect(jsonPath("$.data.structuredReply.summary").value("建议先休息并补充水分。"))
+                .andExpect(jsonPath("$.data.reportTriggerLevel").value("suggested"))
+                .andExpect(jsonPath("$.data.reportActionText").value("当前问诊信息较完整，可按需生成诊断报告。"));
 
         when(medicalApp.generateReportFromThread("thread-flow-1", userId)).thenReturn(new MedicalDiagnosisReport(
                 "thread-flow-1的医疗诊断报告",

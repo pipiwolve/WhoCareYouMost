@@ -137,6 +137,8 @@ public class MedicalRagProperties {
 
         private final Simple simple = new Simple();
 
+        private final Elasticsearch elasticsearch = new Elasticsearch();
+
         public String getType() {
             return type;
         }
@@ -157,6 +159,10 @@ public class MedicalRagProperties {
             return simple;
         }
 
+        public Elasticsearch getElasticsearch() {
+            return elasticsearch;
+        }
+
         public static class Simple {
 
             private String storeFile = "data/medical-rag/simple-vector-store.json";
@@ -167,6 +173,19 @@ public class MedicalRagProperties {
 
             public void setStoreFile(String storeFile) {
                 this.storeFile = storeFile;
+            }
+        }
+
+        public static class Elasticsearch {
+
+            private boolean fallbackToSimpleOnStartupFailure;
+
+            public boolean isFallbackToSimpleOnStartupFailure() {
+                return fallbackToSimpleOnStartupFailure;
+            }
+
+            public void setFallbackToSimpleOnStartupFailure(boolean fallbackToSimpleOnStartupFailure) {
+                this.fallbackToSimpleOnStartupFailure = fallbackToSimpleOnStartupFailure;
             }
         }
     }

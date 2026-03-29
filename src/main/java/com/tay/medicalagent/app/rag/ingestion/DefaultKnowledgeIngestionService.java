@@ -22,6 +22,8 @@ import java.util.Set;
  */
 public class DefaultKnowledgeIngestionService implements KnowledgeIngestionService {
 
+    private static final int MAX_EMBEDDING_BATCH_SIZE = 25;
+
     private final VectorStore vectorStore;
     private final MedicalKnowledgeDocumentLoader medicalKnowledgeDocumentLoader;
     private final MedicalKnowledgeMetadataNormalizerTransformer metadataNormalizerTransformer;
@@ -71,9 +73,7 @@ public class DefaultKnowledgeIngestionService implements KnowledgeIngestionServi
         documents = summaryMetadataEnricherTransformer.transform(documents);
         documents = keywordMetadataEnricherTransformer.transform(documents);
 
-        if (!documents.isEmpty()) {
-            vectorStore.write(documents);
-        }
+        writeDocuments(documents);
 
         List<String> indexedIds = documents.stream()
                 .map(Document::getId)
@@ -108,6 +108,18 @@ public class DefaultKnowledgeIngestionService implements KnowledgeIngestionServi
                 parent.mkdirs();
             }
             simpleVectorStore.save(storeFile);
+        }
+    }
+
+    private void writeDocuments(List<Document> documents) {
+        if (documents.isEmpty()) {
+            return;
+        }
+
+        // DashScope embeddings accept at most 25 texts per request, so split ETL writes accordingly.
+        for (int start = 0; start < documents.size(); start += MAX_EMBEDDING_BATCH_SIZE) {
+            int end = Math.min(start + MAX_EMBEDDING_BATCH_SIZE, documents.size());
+            vectorStore.write(documents.subList(start, end));
         }
     }
 

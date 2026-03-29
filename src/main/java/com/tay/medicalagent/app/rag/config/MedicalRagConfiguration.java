@@ -1,6 +1,9 @@
 package com.tay.medicalagent.app.rag.config;
 
 import com.tay.medicalagent.app.rag.embedding.MedicalQueryAwareEmbeddingModel;
+import com.tay.medicalagent.app.rag.vectorstore.ElasticsearchBackedVectorStore;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.ai.vectorstore.elasticsearch.ElasticsearchVectorStore;
@@ -16,6 +19,10 @@ import org.springframework.context.annotation.Primary;
 import org.elasticsearch.client.RestClient;
 
 import java.io.File;
+import java.net.ConnectException;
+import java.net.NoRouteToHostException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 
 @Configuration
 @EnableConfigurationProperties({MedicalRagProperties.class, MedicalRagElasticsearchProperties.class})
@@ -25,6 +32,8 @@ import java.io.File;
  * 当前装配查询/文档双路 EmbeddingModel，并根据配置切换 SimpleVectorStore 或 ElasticsearchVectorStore。
  */
 public class MedicalRagConfiguration {
+
+    private static final Logger log = LoggerFactory.getLogger(MedicalRagConfiguration.class);
 
     @Bean
     @Primary
@@ -36,6 +45,37 @@ public class MedicalRagConfiguration {
     @Bean
     @ConditionalOnProperty(prefix = "medical.rag.vector-store", name = "type", havingValue = "simple")
     public VectorStore simpleMedicalVectorStore(EmbeddingModel embeddingModel, MedicalRagProperties medicalRagProperties) {
+        return buildSimpleVectorStore(embeddingModel, medicalRagProperties);
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "medical.rag.vector-store", name = "type", havingValue = "elasticsearch", matchIfMissing = true)
+    public VectorStore elasticsearchMedicalVectorStore(
+            RestClient restClient,
+            EmbeddingModel embeddingModel,
+            MedicalRagProperties medicalRagProperties,
+            MedicalRagElasticsearchProperties elasticsearchProperties
+    ) {
+        try {
+            return buildElasticsearchVectorStore(restClient, embeddingModel, elasticsearchProperties);
+        }
+        catch (RuntimeException ex) {
+            if (!medicalRagProperties.getVectorStore().getElasticsearch().isFallbackToSimpleOnStartupFailure()
+                    || !isConnectionFailure(ex)) {
+                throw ex;
+            }
+
+            log.warn(
+                    "Elasticsearch vector store startup failed, fallback to SimpleVectorStore. indexName={}, storeFile={}, reason={}",
+                    elasticsearchProperties.getIndexName(),
+                    medicalRagProperties.getVectorStore().getSimple().getStoreFile(),
+                    summarizeFailure(ex)
+            );
+            return buildSimpleVectorStore(embeddingModel, medicalRagProperties);
+        }
+    }
+
+    VectorStore buildSimpleVectorStore(EmbeddingModel embeddingModel, MedicalRagProperties medicalRagProperties) {
         SimpleVectorStore vectorStore = SimpleVectorStore.builder(embeddingModel).build();
         File storeFile = new File(medicalRagProperties.getVectorStore().getSimple().getStoreFile());
         if (storeFile.exists() && storeFile.isFile()) {
@@ -44,10 +84,8 @@ public class MedicalRagConfiguration {
         return vectorStore;
     }
 
-    @Bean
-    @ConditionalOnProperty(prefix = "medical.rag.vector-store", name = "type", havingValue = "elasticsearch", matchIfMissing = true)
-    public VectorStore elasticsearchMedicalVectorStore(
-            RestClient restClient,
+    VectorStore buildElasticsearchVectorStore(
+                RestClient restClient,
             EmbeddingModel embeddingModel,
             MedicalRagElasticsearchProperties elasticsearchProperties
     ) {
@@ -57,10 +95,38 @@ public class MedicalRagConfiguration {
         options.setSimilarity(elasticsearchProperties.getSimilarity());
         options.setEmbeddingFieldName(elasticsearchProperties.getEmbeddingFieldName());
 
-        return ElasticsearchVectorStore.builder(restClient, embeddingModel)
+        ElasticsearchVectorStore vectorStore = ElasticsearchVectorStore.builder(restClient, embeddingModel)
                 .options(options)
                 .initializeSchema(elasticsearchProperties.isInitializeSchema())
                 .build();
+        vectorStore.afterPropertiesSet();
+        return new ElasticsearchBackedVectorStore(vectorStore);
+    }
+
+    private boolean isConnectionFailure(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof ConnectException
+                    || current instanceof SocketTimeoutException
+                    || current instanceof UnknownHostException
+                    || current instanceof NoRouteToHostException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private String summarizeFailure(Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        String message = current.getMessage();
+        if (message == null || message.isBlank()) {
+            return current.getClass().getSimpleName();
+        }
+        return current.getClass().getSimpleName() + ": " + message;
     }
 
     @Bean

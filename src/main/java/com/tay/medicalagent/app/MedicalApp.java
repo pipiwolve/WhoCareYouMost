@@ -4,9 +4,11 @@ import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
 import com.tay.medicalagent.app.rag.store.MedicalRagContextHolder;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalReportPdfFile;
 import com.tay.medicalagent.app.service.chat.MedicalChatService;
 import com.tay.medicalagent.app.service.chat.ThreadConversationService;
 import com.tay.medicalagent.app.service.profile.UserProfileService;
+import com.tay.medicalagent.app.service.report.MedicalReportPdfExportService;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.stereotype.Component;
 
@@ -26,17 +28,20 @@ public class MedicalApp {
     private final UserProfileService userProfileService;
     private final ThreadConversationService threadConversationService;
     private final MedicalRagContextHolder medicalRagContextHolder;
+    private final MedicalReportPdfExportService medicalReportPdfExportService;
 
     public MedicalApp(
             MedicalChatService medicalChatService,
             UserProfileService userProfileService,
             ThreadConversationService threadConversationService,
-            MedicalRagContextHolder medicalRagContextHolder
+            MedicalRagContextHolder medicalRagContextHolder,
+            MedicalReportPdfExportService medicalReportPdfExportService
     ) {
         this.medicalChatService = medicalChatService;
         this.userProfileService = userProfileService;
         this.threadConversationService = threadConversationService;
         this.medicalRagContextHolder = medicalRagContextHolder;
+        this.medicalReportPdfExportService = medicalReportPdfExportService;
     }
 
     /**
@@ -171,6 +176,19 @@ public class MedicalApp {
      */
     public MedicalDiagnosisReport generateReportFromThread(String threadId, String userId) {
         return medicalChatService.generateReportFromThread(threadId, userId);
+    }
+
+    /**
+     * 导出指定会话的 PDF 诊断报告。
+     *
+     * @param sessionId 前端会话 ID
+     * @param threadId 会话线程 ID
+     * @param userId 用户唯一标识
+     * @return PDF 文件结果
+     */
+    public MedicalReportPdfFile exportReportPdf(String sessionId, String threadId, String userId) {
+        MedicalDiagnosisReport report = medicalChatService.generateReportFromThread(threadId, userId);
+        return medicalReportPdfExportService.exportReportPdf(sessionId, threadId, userId, report);
     }
 
     /**

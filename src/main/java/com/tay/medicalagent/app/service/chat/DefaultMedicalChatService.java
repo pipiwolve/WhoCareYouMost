@@ -10,7 +10,9 @@ import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
 import com.tay.medicalagent.app.prompt.MedicalPrompts;
 import com.tay.medicalagent.app.service.profile.UserProfileService;
 import com.tay.medicalagent.app.service.report.MedicalReportService;
-import com.tay.medicalagent.app.service.report.ReportDecision;
+import com.tay.medicalagent.app.service.report.MedicalReportTriggerPolicy;
+import com.tay.medicalagent.app.service.report.ReportTriggerDecision;
+import com.tay.medicalagent.app.service.report.ReportTriggerLevel;
 import com.tay.medicalagent.app.service.runtime.MedicalAgentRuntime;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -33,6 +35,7 @@ public class DefaultMedicalChatService implements MedicalChatService {
     private final MedicalAgentRuntime medicalAgentRuntime;
     private final ThreadConversationService threadConversationService;
     private final MedicalReportService medicalReportService;
+    private final MedicalReportTriggerPolicy medicalReportTriggerPolicy;
     private final UserProfileService userProfileService;
     private final MedicalRagContextHolder medicalRagContextHolder;
     private final MedicalReplyFormatter medicalReplyFormatter;
@@ -41,6 +44,7 @@ public class DefaultMedicalChatService implements MedicalChatService {
             MedicalAgentRuntime medicalAgentRuntime,
             ThreadConversationService threadConversationService,
             MedicalReportService medicalReportService,
+            MedicalReportTriggerPolicy medicalReportTriggerPolicy,
             UserProfileService userProfileService,
             MedicalRagContextHolder medicalRagContextHolder,
             MedicalReplyFormatter medicalReplyFormatter
@@ -48,6 +52,7 @@ public class DefaultMedicalChatService implements MedicalChatService {
         this.medicalAgentRuntime = medicalAgentRuntime;
         this.threadConversationService = threadConversationService;
         this.medicalReportService = medicalReportService;
+        this.medicalReportTriggerPolicy = medicalReportTriggerPolicy;
         this.userProfileService = userProfileService;
         this.medicalRagContextHolder = medicalRagContextHolder;
         this.medicalReplyFormatter = medicalReplyFormatter;
@@ -71,15 +76,21 @@ public class DefaultMedicalChatService implements MedicalChatService {
                 .media(assistantMessage.getMedia())
                 .build();
         threadConversationService.appendExchange(effectiveThreadId, new UserMessage(prompt), normalizedAssistantMessage);
+        List<Message> conversation = threadConversationService.getThreadConversation(effectiveThreadId);
         RagContext ragContext = medicalRagContextHolder.get(effectiveThreadId).orElse(RagContext.empty(prompt));
-
-        ReportDecision reportDecision = medicalReportService.evaluateReportAvailability(normalizedReply.reply());
+        ReportTriggerDecision triggerDecision = medicalReportTriggerPolicy.evaluate(
+                normalizedReply.structuredReply(),
+                normalizedReply.reply(),
+                conversation
+        );
         return new MedicalChatResult(
                 effectiveThreadId,
                 effectiveUserId,
                 normalizedReply.reply(),
-                reportDecision.available(),
-                reportDecision.reason(),
+                triggerDecision.reportAvailable(),
+                triggerDecision.reportReason(),
+                triggerDecision.level(),
+                triggerDecision.actionText(),
                 false,
                 null,
                 ragContext.applied(),
@@ -125,12 +136,15 @@ public class DefaultMedicalChatService implements MedicalChatService {
     private MedicalChatResult buildReportResult(String threadId, String userId) {
         List<Message> conversation = threadConversationService.getThreadConversation(threadId);
         if (conversation.isEmpty()) {
+            ReportTriggerDecision triggerDecision = ReportTriggerDecision.none();
             return new MedicalChatResult(
                     threadId,
                     userId,
                     NO_REPORT_CONTEXT_REPLY,
-                    false,
-                    "当前线程暂无可用于整理的问诊内容。",
+                    triggerDecision.reportAvailable(),
+                    triggerDecision.reportReason(),
+                    triggerDecision.level(),
+                    triggerDecision.actionText(),
                     false,
                     null,
                     false,
@@ -140,12 +154,17 @@ public class DefaultMedicalChatService implements MedicalChatService {
         }
 
         MedicalDiagnosisReport report = medicalReportService.generateReportFromThread(threadId, userId);
+        ReportTriggerDecision triggerDecision = report != null && report.shouldGenerateReport()
+                ? new ReportTriggerDecision(ReportTriggerLevel.RECOMMENDED, "已按用户请求基于当前线程生成诊断报告。")
+                : ReportTriggerDecision.none();
         return new MedicalChatResult(
                 threadId,
                 userId,
                 REPORT_REQUEST_REPLY,
-                true,
-                "已按用户请求基于当前线程生成诊断报告。",
+                triggerDecision.reportAvailable(),
+                triggerDecision.reportReason(),
+                triggerDecision.level(),
+                triggerDecision.actionText(),
                 true,
                 report,
                 false,
