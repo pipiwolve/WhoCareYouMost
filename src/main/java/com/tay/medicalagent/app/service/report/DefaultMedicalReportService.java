@@ -82,7 +82,7 @@ public class DefaultMedicalReportService implements MedicalReportService {
 
         List<Message> conversation = threadConversationService.getThreadConversation(effectiveThreadId);
         if (conversation.isEmpty()) {
-            return fallbackReport("", effectiveThreadId, "当前线程暂无足够对话内容，无法生成诊断报告。", false);
+            return fallbackReport("", effectiveThreadId, effectiveUserId, "当前线程暂无足够对话内容，无法生成诊断报告。", false);
         }
 
         return generateMedicalDiagnosisReport(conversation, effectiveThreadId, effectiveUserId);
@@ -100,6 +100,7 @@ public class DefaultMedicalReportService implements MedicalReportService {
         String conversationTranscript = threadConversationService.buildConversationTranscript(conversation);
         String latestAssistantReply = threadConversationService.findLatestAssistantReply(conversation);
         String effectiveChatId = normalizeThreadId(chatId);
+        String reportSubject = resolveReportSubject(userId, effectiveChatId);
 
         String reportPrompt = """
                 请根据以下内容判断是否需要生成结构化诊断报告，并严格按指定 JSON 返回。
@@ -128,7 +129,7 @@ public class DefaultMedicalReportService implements MedicalReportService {
                 conversationTranscript,
                 profileContext,
                 latestAssistantReply,
-                effectiveChatId,
+                reportSubject,
                 outputConverter.getFormat()
         );
 
@@ -141,21 +142,22 @@ public class DefaultMedicalReportService implements MedicalReportService {
             ));
             String responseText = extractAssistantText(response);
             MedicalDiagnosisReport report = outputConverter.convert(responseText);
-            return normalizeReport(report, latestAssistantReply, effectiveChatId);
+            return normalizeReport(report, latestAssistantReply, effectiveChatId, userId);
         }
         catch (Exception ex) {
             log.warn("Failed to generate structured medical report for chatId={}", effectiveChatId, ex);
-            return fallbackReport(latestAssistantReply, effectiveChatId, "报告生成失败，保留本轮回答作为兜底结果。", true);
+            return fallbackReport(latestAssistantReply, effectiveChatId, userId, "报告生成失败，保留本轮回答作为兜底结果。", true);
         }
     }
 
     private MedicalDiagnosisReport normalizeReport(
             MedicalDiagnosisReport report,
             String assistantReply,
-            String chatId
+            String chatId,
+            String userId
     ) {
         if (report == null) {
-            return fallbackReport(assistantReply, chatId, "模型未返回有效报告。", true);
+            return fallbackReport(assistantReply, chatId, userId, "模型未返回有效报告。", true);
         }
 
         String answerStatus = switch (safeText(report.answerStatus())) {
@@ -163,10 +165,9 @@ public class DefaultMedicalReportService implements MedicalReportService {
             default -> report.shouldGenerateReport() ? "CONFIRMED" : "GENERAL_ADVICE_ONLY";
         };
 
-        String reportTitle = safeText(report.reportTitle());
-        if (reportTitle.isBlank()) {
-            reportTitle = report.shouldGenerateReport() ? chatId + "的医疗诊断报告" : "无需生成诊断报告";
-        }
+        String reportTitle = report.shouldGenerateReport()
+                ? resolveReportSubject(userId, chatId) + "的医疗诊断报告"
+                : "无需生成诊断报告";
 
         String normalizedAssistantReply = safeText(report.assistantReply());
         if (normalizedAssistantReply.isBlank()) {
@@ -191,12 +192,14 @@ public class DefaultMedicalReportService implements MedicalReportService {
     private MedicalDiagnosisReport fallbackReport(
             String assistantReply,
             String chatId,
+            String userId,
             String uncertaintyReason,
             boolean shouldGenerateReport
     ) {
         String effectiveChatId = normalizeThreadId(chatId);
+        String reportSubject = resolveReportSubject(userId, effectiveChatId);
         return new MedicalDiagnosisReport(
-                shouldGenerateReport ? effectiveChatId + "的医疗诊断报告" : "无需生成诊断报告",
+                shouldGenerateReport ? reportSubject + "的医疗诊断报告" : "无需生成诊断报告",
                 shouldGenerateReport,
                 shouldGenerateReport ? "INSUFFICIENT_INFORMATION" : "GENERAL_ADVICE_ONLY",
                 "",
@@ -216,6 +219,25 @@ public class DefaultMedicalReportService implements MedicalReportService {
         }
         String text = response.getResult().getOutput().getText();
         return text == null ? "" : text;
+    }
+
+    private String resolveReportSubject(String userId, String fallbackChatId) {
+        String effectiveUserId = userProfileService.normalizeUserId(userId);
+        return userProfileService.getUserProfileMemory(effectiveUserId)
+                .map(profile -> profile.get("name"))
+                .map(this::safeProfileValue)
+                .filter(name -> !name.isBlank())
+                .orElseGet(() -> normalizeThreadId(fallbackChatId));
+    }
+
+    private String safeProfileValue(Object value) {
+        if (value == null) {
+            return "";
+        }
+        if (value instanceof String text) {
+            return safeText(text);
+        }
+        return safeText(String.valueOf(value));
     }
 
     private boolean containsAny(String text, String... candidates) {

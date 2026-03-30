@@ -3,6 +3,7 @@ package com.tay.medicalagent.controller.v1;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.tay.medicalagent.app.MedicalApp;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
+import com.tay.medicalagent.app.report.MedicalReportSnapshot;
 import com.tay.medicalagent.app.service.model.MedicalModelConfigurationException;
 import com.tay.medicalagent.session.ConsultationSession;
 import com.tay.medicalagent.session.ConsultationSessionService;
@@ -13,8 +14,11 @@ import com.tay.medicalagent.web.support.MedicalApiViewMapper;
 import com.tay.medicalagent.web.support.SessionNotFoundException;
 import com.tay.medicalagent.web.support.UnsupportedAttachmentsException;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -37,6 +41,7 @@ import java.util.concurrent.Executor;
  */
 public class ChatController {
 
+    private static final Logger log = LoggerFactory.getLogger(ChatController.class);
     private static final int MAX_CHUNK_LENGTH = 12;
 
     private final MedicalApp medicalApp;
@@ -66,49 +71,93 @@ public class ChatController {
                 consultationSession.threadId(),
                 consultationSession.userId()
         );
+        MedicalReportSnapshot reportPreview = medicalApp.prepareReportPreview(
+                consultationSession.sessionId(),
+                request.message().trim(),
+                consultationSession.threadId(),
+                consultationSession.userId(),
+                consultationSession.latitude(),
+                consultationSession.longitude(),
+                medicalChatResult
+        ).orElse(null);
         return ApiResponse.success(medicalApiViewMapper.toChatCompletionResponse(
                 consultationSession.sessionId(),
-                medicalChatResult
+                medicalChatResult,
+                reportPreview
         ));
     }
 
     @PostMapping(value = "/completions", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter completeStream(@Valid @RequestBody ChatCompletionRequest request) {
         SseEmitter emitter = new SseEmitter(0L);
-        sendSafely(emitter, "meta", Map.of("sessionId", request.sessionId()));
+        ChatSseSink sink = new SseEmitterChatSseSink(emitter);
+        if (!sink.send("meta", Map.of("sessionId", request.sessionId()))) {
+            sink.complete();
+            return emitter;
+        }
 
-        medicalSseExecutor.execute(() -> {
-            try {
-                validateAttachments(request.attachments());
-                ConsultationSession consultationSession = consultationSessionService.getRequiredSession(request.sessionId());
-                MedicalChatResult medicalChatResult = medicalApp.doChat(
-                        request.message().trim(),
-                        consultationSession.threadId(),
-                        consultationSession.userId()
-                );
-                ChatCompletionResponse response = medicalApiViewMapper.toChatCompletionResponse(
-                        consultationSession.sessionId(),
-                        medicalChatResult
-                );
-
-                List<String> chunks = splitText(response.reply());
-                for (int index = 0; index < chunks.size(); index++) {
-                    Map<String, Object> payload = new LinkedHashMap<>();
-                    payload.put("delta", chunks.get(index));
-                    payload.put("index", index);
-                    sendSafely(emitter, "chunk", payload);
-                }
-
-                sendSafely(emitter, "done", response);
-                emitter.complete();
-            }
-            catch (Exception ex) {
-                sendSafely(emitter, "error", buildErrorPayload(ex));
-                emitter.complete();
-            }
-        });
+        medicalSseExecutor.execute(() -> emitStreamResponse(request, sink));
 
         return emitter;
+    }
+
+    void emitStreamResponse(ChatCompletionRequest request, ChatSseSink sink) {
+        long startedAt = System.nanoTime();
+        try {
+            validateAttachments(request.attachments());
+            ConsultationSession consultationSession = consultationSessionService.getRequiredSession(request.sessionId());
+            String trimmedMessage = request.message().trim();
+            MedicalChatResult medicalChatResult = medicalApp.doChat(
+                    trimmedMessage,
+                    consultationSession.threadId(),
+                    consultationSession.userId()
+            );
+            long chatReadyAt = System.nanoTime();
+
+            if (!emitReplyChunks(sink, medicalChatResult.reply())) {
+                sink.complete();
+                return;
+            }
+            long chunksEmittedAt = System.nanoTime();
+
+            MedicalReportSnapshot reportPreview = medicalApp.prepareReportPreview(
+                    consultationSession.sessionId(),
+                    trimmedMessage,
+                    consultationSession.threadId(),
+                    consultationSession.userId(),
+                    consultationSession.latitude(),
+                    consultationSession.longitude(),
+                    medicalChatResult
+            ).orElse(null);
+            long previewReadyAt = System.nanoTime();
+            ChatCompletionResponse response = medicalApiViewMapper.toChatCompletionResponse(
+                    consultationSession.sessionId(),
+                    medicalChatResult,
+                    reportPreview
+            );
+
+            if (!sink.send("done", response)) {
+                sink.complete();
+                return;
+            }
+
+            long finishedAt = System.nanoTime();
+            if (log.isDebugEnabled()) {
+                log.debug(
+                        "SSE chat finished. sessionId={}, chatReadyMs={}, chunkEmitMs={}, previewMs={}, totalMs={}",
+                        consultationSession.sessionId(),
+                        elapsedMillis(startedAt, chatReadyAt),
+                        elapsedMillis(chatReadyAt, chunksEmittedAt),
+                        elapsedMillis(chunksEmittedAt, previewReadyAt),
+                        elapsedMillis(startedAt, finishedAt)
+                );
+            }
+            sink.complete();
+        }
+        catch (Exception ex) {
+            sink.send("error", buildErrorPayload(ex));
+            sink.complete();
+        }
     }
 
     private void validateAttachments(List<String> attachments) {
@@ -137,6 +186,9 @@ public class ChatController {
         if (ex instanceof GraphRunnerException) {
             return "CHAT_RUNTIME_ERROR";
         }
+        if (ex instanceof ResourceAccessException) {
+            return "MODEL_UPSTREAM_UNAVAILABLE";
+        }
         return "INTERNAL_ERROR";
     }
 
@@ -150,16 +202,47 @@ public class ChatController {
         if (ex instanceof GraphRunnerException) {
             return "问诊生成失败";
         }
+        if (ex instanceof ResourceAccessException) {
+            return "模型服务网络异常，请稍后重试";
+        }
         return "系统内部错误";
     }
 
-    private void sendSafely(SseEmitter emitter, String eventName, Object payload) {
+    private boolean emitReplyChunks(ChatSseSink sink, String reply) {
+        List<String> chunks = splitText(reply);
+        for (int index = 0; index < chunks.size(); index++) {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("delta", chunks.get(index));
+            payload.put("index", index);
+            if (!sink.send("chunk", payload)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean sendSafely(SseEmitter emitter, String eventName, Object payload) {
         try {
             emitter.send(SseEmitter.event().name(eventName).data(payload));
+            return true;
         }
-        catch (IOException ioException) {
-            throw new IllegalStateException("发送 SSE 事件失败", ioException);
+        catch (IOException | IllegalStateException ex) {
+            log.debug("SSE send skipped due to closed/broken connection. eventName={}, reason={}", eventName, ex.getMessage());
+            return false;
         }
+    }
+
+    private void safeComplete(SseEmitter emitter) {
+        try {
+            emitter.complete();
+        }
+        catch (Exception ex) {
+            log.debug("SSE complete skipped due to closed connection. reason={}", ex.getMessage());
+        }
+    }
+
+    private long elapsedMillis(long startNanos, long endNanos) {
+        return Math.max(0L, (endNanos - startNanos) / 1_000_000L);
     }
 
     private List<String> splitText(String text) {
@@ -189,5 +272,31 @@ public class ChatController {
             case '，', '。', '！', '？', '；', '：', ',', '.', '!', '?', ';', ':', '\n' -> true;
             default -> false;
         };
+    }
+
+    interface ChatSseSink {
+
+        boolean send(String eventName, Object payload);
+
+        void complete();
+    }
+
+    private final class SseEmitterChatSseSink implements ChatSseSink {
+
+        private final SseEmitter emitter;
+
+        private SseEmitterChatSseSink(SseEmitter emitter) {
+            this.emitter = emitter;
+        }
+
+        @Override
+        public boolean send(String eventName, Object payload) {
+            return sendSafely(emitter, eventName, payload);
+        }
+
+        @Override
+        public void complete() {
+            safeComplete(emitter);
+        }
     }
 }

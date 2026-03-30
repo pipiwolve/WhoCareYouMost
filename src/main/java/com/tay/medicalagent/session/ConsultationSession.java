@@ -12,10 +12,35 @@ public record ConsultationSession(
         String threadId,
         String userId,
         Instant createdAt,
-        Instant lastActiveAt
+    Instant lastActiveAt,
+    Double latitude,
+    Double longitude,
+    Instant locationAuthorizedAt
 ) {
 
     public ConsultationSession touch(Instant timestamp) {
-        return new ConsultationSession(sessionId, threadId, userId, createdAt, timestamp);
+    return new ConsultationSession(
+        sessionId,
+        threadId,
+        userId,
+        createdAt,
+        timestamp,
+        latitude,
+        longitude,
+        locationAuthorizedAt
+    );
+    }
+
+    public ConsultationSession withLocation(Double latitude, Double longitude, Instant authorizedAt) {
+    return new ConsultationSession(
+        sessionId,
+        threadId,
+        userId,
+        createdAt,
+        lastActiveAt,
+        latitude,
+        longitude,
+        authorizedAt
+    );
     }
 }

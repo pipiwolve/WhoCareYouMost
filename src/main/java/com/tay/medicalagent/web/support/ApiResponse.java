@@ -15,7 +15,7 @@ public record ApiResponse<T>(
 ) {
 
     public static <T> ApiResponse<T> success(T data) {
-        return new ApiResponse<>(200, "OK", data);
+        return new ApiResponse<>(200, "success", data);
     }
 
     public static <T> ApiResponse<T> of(int code, String message, T data) {

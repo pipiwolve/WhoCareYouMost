@@ -4,11 +4,18 @@ import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
 import com.tay.medicalagent.app.rag.store.MedicalRagContextHolder;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
+import com.tay.medicalagent.app.report.MedicalPlanningIntent;
 import com.tay.medicalagent.app.report.MedicalReportPdfFile;
+import com.tay.medicalagent.app.report.MedicalReportSnapshot;
 import com.tay.medicalagent.app.service.chat.MedicalChatService;
 import com.tay.medicalagent.app.service.chat.ThreadConversationService;
 import com.tay.medicalagent.app.service.profile.UserProfileService;
+import com.tay.medicalagent.app.service.report.MedicalHospitalPlanningService;
+import com.tay.medicalagent.app.service.report.MedicalPlanningIntentResolver;
 import com.tay.medicalagent.app.service.report.MedicalReportPdfExportService;
+import com.tay.medicalagent.app.service.report.MedicalReportSnapshotService;
+import com.tay.medicalagent.app.service.report.ReportTriggerLevel;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.stereotype.Component;
 
@@ -29,19 +36,28 @@ public class MedicalApp {
     private final ThreadConversationService threadConversationService;
     private final MedicalRagContextHolder medicalRagContextHolder;
     private final MedicalReportPdfExportService medicalReportPdfExportService;
+    private final MedicalHospitalPlanningService medicalHospitalPlanningService;
+    private final MedicalReportSnapshotService medicalReportSnapshotService;
+    private final MedicalPlanningIntentResolver medicalPlanningIntentResolver;
 
     public MedicalApp(
             MedicalChatService medicalChatService,
             UserProfileService userProfileService,
             ThreadConversationService threadConversationService,
             MedicalRagContextHolder medicalRagContextHolder,
-            MedicalReportPdfExportService medicalReportPdfExportService
+            MedicalReportPdfExportService medicalReportPdfExportService,
+            MedicalHospitalPlanningService medicalHospitalPlanningService,
+            MedicalReportSnapshotService medicalReportSnapshotService,
+            MedicalPlanningIntentResolver medicalPlanningIntentResolver
     ) {
         this.medicalChatService = medicalChatService;
         this.userProfileService = userProfileService;
         this.threadConversationService = threadConversationService;
         this.medicalRagContextHolder = medicalRagContextHolder;
         this.medicalReportPdfExportService = medicalReportPdfExportService;
+        this.medicalHospitalPlanningService = medicalHospitalPlanningService;
+        this.medicalReportSnapshotService = medicalReportSnapshotService;
+        this.medicalPlanningIntentResolver = medicalPlanningIntentResolver;
     }
 
     /**
@@ -187,8 +203,99 @@ public class MedicalApp {
      * @return PDF 文件结果
      */
     public MedicalReportPdfFile exportReportPdf(String sessionId, String threadId, String userId) {
-        MedicalDiagnosisReport report = medicalChatService.generateReportFromThread(threadId, userId);
-        return medicalReportPdfExportService.exportReportPdf(sessionId, threadId, userId, report);
+        return exportReportPdf(sessionId, threadId, userId, null, null);
+    }
+
+    public MedicalReportPdfFile exportReportPdf(
+            String sessionId,
+            String threadId,
+            String userId,
+            Double latitude,
+            Double longitude
+    ) {
+        MedicalReportSnapshot snapshot = medicalReportSnapshotService.getOrCreateSnapshot(
+                normalizeSessionId(sessionId),
+                threadId,
+                userId,
+                latitude,
+                longitude
+        );
+        return medicalReportPdfExportService.exportReportPdf(
+                sessionId,
+                threadId,
+                userId,
+                snapshot.report(),
+                snapshot.planningSummary()
+        );
+    }
+
+    public MedicalHospitalPlanningSummary planHospitalsForReport(
+            Double latitude,
+            Double longitude,
+            MedicalDiagnosisReport report
+    ) {
+        return medicalHospitalPlanningService.plan(latitude, longitude, report);
+    }
+
+    public MedicalReportSnapshot getOrCreateReportSnapshot(
+            String sessionId,
+            String threadId,
+            String userId,
+            Double latitude,
+            Double longitude
+    ) {
+        return medicalReportSnapshotService.getOrCreateSnapshot(
+                normalizeSessionId(sessionId),
+                threadId,
+                userId,
+                latitude,
+                longitude
+        );
+    }
+
+    public Optional<MedicalReportSnapshot> prepareReportPreview(
+            String sessionId,
+            String prompt,
+            String threadId,
+            String userId,
+            Double latitude,
+            Double longitude,
+            MedicalChatResult medicalChatResult
+    ) {
+        if (!medicalPlanningIntentResolver.shouldPrepareChatPreview(prompt, medicalChatResult)) {
+            return Optional.empty();
+        }
+
+        MedicalDiagnosisReport report = medicalChatResult != null
+                && medicalChatResult.reportGenerated()
+                && medicalChatResult.report() != null
+                ? medicalChatResult.report()
+                : medicalChatService.generateReportFromThread(threadId, userId);
+        if (report == null || !report.shouldGenerateReport()) {
+            return Optional.empty();
+        }
+
+        MedicalPlanningIntent planningIntent = medicalPlanningIntentResolver.resolve(
+                report,
+                medicalChatResult == null ? null : medicalChatResult.structuredReply(),
+                prompt,
+                medicalChatResult == null || medicalChatResult.reportTriggerLevel() == null
+                        ? ReportTriggerLevel.NONE
+                        : medicalChatResult.reportTriggerLevel()
+        );
+        return Optional.of(medicalReportSnapshotService.getOrCreateSnapshot(
+                normalizeSessionId(sessionId),
+                threadId,
+                userId,
+                latitude,
+                longitude,
+                report,
+                planningIntent
+        ));
+    }
+
+    public void invalidateReportSnapshot(String sessionId) {
+        medicalReportSnapshotService.invalidate(normalizeSessionId(sessionId));
     }
 
     /**
@@ -220,6 +327,7 @@ public class MedicalApp {
         userProfileService.clearMemory();
         threadConversationService.clearConversations();
         medicalRagContextHolder.clear();
+        medicalReportSnapshotService.clear();
         medicalChatService.resetRuntime();
     }
 
@@ -230,5 +338,12 @@ public class MedicalApp {
      */
     public String createThreadId() {
         return medicalChatService.createThreadId();
+    }
+
+    private String normalizeSessionId(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return "unknown-session";
+        }
+        return sessionId.trim();
     }
 }

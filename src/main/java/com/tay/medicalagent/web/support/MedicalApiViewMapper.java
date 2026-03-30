@@ -3,9 +3,15 @@ package com.tay.medicalagent.web.support;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
 import com.tay.medicalagent.app.chat.StructuredMedicalReply;
 import com.tay.medicalagent.app.rag.model.KnowledgeSource;
+import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
+import com.tay.medicalagent.app.report.MedicalHospitalRecommendation;
+import com.tay.medicalagent.app.report.MedicalHospitalRouteOption;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalReportSnapshot;
 import com.tay.medicalagent.app.prompt.MedicalPrompts;
 import com.tay.medicalagent.web.dto.ChatCompletionResponse;
+import com.tay.medicalagent.web.dto.HospitalPlanView;
+import com.tay.medicalagent.web.dto.HospitalRouteOptionView;
 import com.tay.medicalagent.web.dto.KnowledgeSourceView;
 import com.tay.medicalagent.web.dto.ReportQueryResponse;
 import com.tay.medicalagent.web.dto.ReportViewDto;
@@ -21,9 +27,25 @@ import java.util.List;
 public class MedicalApiViewMapper {
 
     private static final String DEFAULT_REPORT_UNAVAILABLE_REASON = "当前会话暂无足够问诊内容";
+    private static final String REPORT_READY_REASON = "报告生成完毕";
     private static final String DEFAULT_DISCLAIMER = MedicalPrompts.DEFAULT_REPORT_DISCLAIMER;
+    private static final String DEFAULT_ROUTE_UNAVAILABLE_MESSAGE = "路线服务暂不可用";
 
     public ChatCompletionResponse toChatCompletionResponse(String sessionId, MedicalChatResult medicalChatResult) {
+        return toChatCompletionResponse(sessionId, medicalChatResult, null);
+    }
+
+    public ChatCompletionResponse toChatCompletionResponse(
+            String sessionId,
+            MedicalChatResult medicalChatResult,
+            MedicalReportSnapshot reportPreviewSnapshot
+    ) {
+        ReportViewDto generatedReport = medicalChatResult.report() == null
+                ? null
+                : toReportView(
+                        medicalChatResult.report(),
+                        reportPreviewSnapshot == null ? MedicalHospitalPlanningSummary.empty() : reportPreviewSnapshot.planningSummary()
+                );
         return new ChatCompletionResponse(
                 sessionId,
                 safeText(medicalChatResult.reply()),
@@ -33,13 +55,21 @@ public class MedicalApiViewMapper {
                 safeText(medicalChatResult.effectiveReportTriggerLevel()),
                 safeText(medicalChatResult.effectiveReportActionText()),
                 medicalChatResult.reportGenerated(),
-                toReportViewNullable(medicalChatResult.report()),
+                generatedReport,
+                toReportPreview(reportPreviewSnapshot),
                 medicalChatResult.ragApplied(),
                 safeSources(medicalChatResult.sources())
         );
     }
 
     public ReportQueryResponse toReportQueryResponse(MedicalDiagnosisReport medicalDiagnosisReport) {
+        return toReportQueryResponse(medicalDiagnosisReport, MedicalHospitalPlanningSummary.empty());
+    }
+
+    public ReportQueryResponse toReportQueryResponse(
+            MedicalDiagnosisReport medicalDiagnosisReport,
+            MedicalHospitalPlanningSummary planningSummary
+    ) {
         if (medicalDiagnosisReport == null) {
             return new ReportQueryResponse(false, DEFAULT_REPORT_UNAVAILABLE_REASON, null);
         }
@@ -52,14 +82,26 @@ public class MedicalApiViewMapper {
             return new ReportQueryResponse(false, reason, null);
         }
 
-        return new ReportQueryResponse(true, "", toReportView(medicalDiagnosisReport));
+        return new ReportQueryResponse(true, REPORT_READY_REASON, toReportView(medicalDiagnosisReport, planningSummary));
     }
 
     public ReportViewDto toReportViewNullable(MedicalDiagnosisReport medicalDiagnosisReport) {
-        return medicalDiagnosisReport == null ? null : toReportView(medicalDiagnosisReport);
+        return medicalDiagnosisReport == null
+                ? null
+                : toReportView(medicalDiagnosisReport, MedicalHospitalPlanningSummary.empty());
     }
 
     public ReportViewDto toReportView(MedicalDiagnosisReport medicalDiagnosisReport) {
+        return toReportView(medicalDiagnosisReport, MedicalHospitalPlanningSummary.empty());
+    }
+
+    public ReportViewDto toReportView(
+            MedicalDiagnosisReport medicalDiagnosisReport,
+            MedicalHospitalPlanningSummary planningSummary
+    ) {
+        MedicalHospitalPlanningSummary effectivePlanning = planningSummary == null
+                ? MedicalHospitalPlanningSummary.empty()
+                : planningSummary;
         return new ReportViewDto(
                 safeText(medicalDiagnosisReport.reportTitle()),
                 safeText(medicalDiagnosisReport.currentRiskLevel()),
@@ -68,8 +110,55 @@ public class MedicalApiViewMapper {
                 safeList(medicalDiagnosisReport.mainBasis()),
                 safeList(medicalDiagnosisReport.nextStepSuggestions()),
                 safeList(medicalDiagnosisReport.escalationCriteria()),
+                toHospitalPlans(effectivePlanning.hospitals()),
+                effectivePlanning.routesAvailable(),
+                safeText(effectivePlanning.routeStatusMessage()).isBlank()
+                        ? (effectivePlanning.routesAvailable() ? "" : DEFAULT_ROUTE_UNAVAILABLE_MESSAGE)
+                        : safeText(effectivePlanning.routeStatusMessage()),
                 DEFAULT_DISCLAIMER
         );
+    }
+
+    private ReportViewDto toReportPreview(MedicalReportSnapshot reportPreviewSnapshot) {
+        if (reportPreviewSnapshot == null || reportPreviewSnapshot.report() == null) {
+            return null;
+        }
+        if (!reportPreviewSnapshot.report().shouldGenerateReport()) {
+            return null;
+        }
+        return toReportView(reportPreviewSnapshot.report(), reportPreviewSnapshot.planningSummary());
+    }
+
+    private List<HospitalPlanView> toHospitalPlans(List<MedicalHospitalRecommendation> recommendations) {
+        if (recommendations == null || recommendations.isEmpty()) {
+            return List.of();
+        }
+        return recommendations.stream().map(this::toHospitalPlanView).toList();
+    }
+
+    private HospitalPlanView toHospitalPlanView(MedicalHospitalRecommendation recommendation) {
+        return new HospitalPlanView(
+                safeText(recommendation.name()),
+                safeText(recommendation.address()),
+                recommendation.tier3a(),
+                recommendation.distanceMeters(),
+                toRouteOptionViews(recommendation.routes())
+        );
+    }
+
+    private List<HospitalRouteOptionView> toRouteOptionViews(List<MedicalHospitalRouteOption> routeOptions) {
+        if (routeOptions == null || routeOptions.isEmpty()) {
+            return List.of();
+        }
+        return routeOptions.stream()
+                .map(option -> new HospitalRouteOptionView(
+                        safeText(option.mode()),
+                        option.distanceMeters(),
+                        option.durationMinutes(),
+                        safeText(option.summary()),
+                        safeTextList(option.steps())
+                ))
+                .toList();
     }
 
     private StructuredReplyView toStructuredReplyView(StructuredMedicalReply structuredMedicalReply) {
@@ -107,6 +196,16 @@ public class MedicalApiViewMapper {
 
     private List<String> safeList(List<String> values) {
         return values == null ? List.of() : values;
+    }
+
+    private List<String> safeTextList(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        return values.stream()
+                .map(this::safeText)
+                .filter(value -> !value.isBlank())
+                .toList();
     }
 
     private String safeText(String value) {

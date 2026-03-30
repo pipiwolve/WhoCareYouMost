@@ -47,7 +47,7 @@ public class UserProfileController {
         ConsultationSession consultationSession =
                 consultationSessionService.createSession(userId, medicalApp.createThreadId());
 
-        String welcomeMessage = "你好%s，我是你的全科智能助手，请问有什么可以帮您？".formatted(request.name().trim());
+        String welcomeMessage = "你好，%s。我是你的医疗向导，请问今天哪里不舒服？".formatted(request.name().trim());
         return ApiResponse.success(new ProfileInitResponse(userId, consultationSession.sessionId(), welcomeMessage));
     }
 

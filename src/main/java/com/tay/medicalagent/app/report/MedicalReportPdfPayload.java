@@ -12,6 +12,7 @@ public record MedicalReportPdfPayload(
         OffsetDateTime generatedAt,
         String fileName,
         String disclaimer,
-        MedicalDiagnosisReport report
+        MedicalDiagnosisReport report,
+        MedicalHospitalPlanningSummary planningSummary
 ) {
 }

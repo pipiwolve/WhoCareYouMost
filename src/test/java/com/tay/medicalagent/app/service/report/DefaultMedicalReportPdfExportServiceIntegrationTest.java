@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lowagie.text.pdf.PdfReader;
 import com.lowagie.text.pdf.parser.PdfTextExtractor;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalReportPdfFile;
 import com.tay.medicalagent.app.service.model.MedicalAiModelProvider;
 import org.junit.jupiter.api.Test;
@@ -39,7 +40,7 @@ class DefaultMedicalReportPdfExportServiceIntegrationTest {
                 "thread_integration",
                 "usr_integration",
                 new MedicalDiagnosisReport(
-                        "thread-integration的医疗诊断报告",
+                        "李四的医疗诊断报告",
                         true,
                         "CONFIRMED",
                         "高风险",
@@ -50,17 +51,18 @@ class DefaultMedicalReportPdfExportServiceIntegrationTest {
                         List.of("立即急诊"),
                         List.of("持续胸痛加重"),
                         "建议立即就医"
-                )
+                    ),
+                    MedicalHospitalPlanningSummary.empty()
         );
 
-        assertEquals("medical-report-sess_integration.pdf", pdfFile.fileName());
+        assertEquals("李四的医疗诊断报告.pdf", pdfFile.fileName());
         assertEquals("application/pdf", pdfFile.contentType());
         assertTrue(pdfFile.content().length > 0);
         assertTrue(new String(pdfFile.content(), 0, 4).startsWith("%PDF"));
 
         try (PdfReader reader = new PdfReader(pdfFile.content())) {
             String extractedText = readAllText(reader);
-            assertTrue(extractedText.contains("thread-integration的医疗诊断报告"));
+            assertTrue(extractedText.contains("李四的医疗诊断报告"));
             assertTrue(extractedText.contains("高风险"));
             assertTrue(extractedText.contains("立即急诊"));
         }

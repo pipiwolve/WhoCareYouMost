@@ -2,6 +2,7 @@ package com.tay.medicalagent.app.service.report;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalReportPdfPayload;
 import com.tay.medicalagent.app.report.MedicalReportPdfToolResult;
 import org.junit.jupiter.api.Test;
@@ -48,7 +49,8 @@ class MedicalReportPdfToolFactoryTest {
                         List.of("补液休息"),
                         List.of("持续高热"),
                         "建议观察"
-                )
+                ),
+                MedicalHospitalPlanningSummary.empty()
         );
         byte[] pdfBytes = "%PDF-tool-test".getBytes();
         when(renderer.render(payload)).thenReturn(pdfBytes);

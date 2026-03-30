@@ -13,6 +13,9 @@ public record ReportViewDto(
         List<String> basis,
         List<String> recommendations,
         List<String> redFlags,
+        List<HospitalPlanView> hospitals,
+        boolean routesAvailable,
+        String routeStatusMessage,
         String disclaimer
 ) {
 }

@@ -19,6 +19,25 @@ spring:
         index-name: medical-rag
         dimensions: 1536
         similarity: cosine
+    mcp:
+      client:
+        enabled: ${MEDICAL_MCP_ENABLED:true}
+        initialized: ${MEDICAL_MCP_INITIALIZED:false}
+        toolcallback:
+          enabled: true
+        name: medical-amap-client
+        version: 1.0.0
+        request-timeout: ${MEDICAL_MCP_REQUEST_TIMEOUT:30s}
+        type: SYNC
+        stdio:
+          connections:
+            amapproxy:
+              command: ${SPRING_AI_MCP_CLIENT_STDIO_CONNECTIONS_AMAPPROXY_COMMAND:node}
+              args:
+                - ${SPRING_AI_MCP_CLIENT_STDIO_CONNECTIONS_AMAPPROXY_ARGS_0:${user.dir}/scripts/amap-mcp-stdio-proxy.js}
+                - ${SPRING_AI_MCP_CLIENT_STDIO_CONNECTIONS_AMAPPROXY_ARGS_1:"@amap/amap-maps-mcp-server"}
+              env:
+                AMAP_MAPS_API_KEY: ${SPRING_AI_MCP_CLIENT_STDIO_CONNECTIONS_AMAPPROXY_ENV_AMAP_MAPS_API_KEY:${AMAP_MAPS_API_KEY:}}
   elasticsearch:
     uris: ${MEDICAL_ES_URIS:http://localhost:9200}
     username: ${MEDICAL_ES_USERNAME:}
@@ -30,6 +49,7 @@ server:
 
 logging:
   level:
+    io.modelcontextprotocol.client.transport.StdioClientTransport: warn
     org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor: debug
     com.tay.medicalagent.interceptor.MyLogModelInterceptor: debug
     com.tay.medicalagent.app.rag.hook.MedicalRagAgentHook: debug
@@ -103,3 +123,42 @@ medical:
   report:
     pdf:
       font-path: ${MEDICAL_REPORT_PDF_FONT_PATH:}
+    planning:
+      enabled: true
+      top-k: 3
+      route-planning-enabled: true
+      mcp-enabled: ${MEDICAL_REPORT_PLANNING_MCP_ENABLED:true}
+      agent-enabled: ${MEDICAL_REPORT_PLANNING_AGENT_ENABLED:true}
+      mcp:
+        server-name: ${MEDICAL_REPORT_PLANNING_MCP_SERVER_NAME:mcp-server/amap-maps}
+        timeout-ms: ${MEDICAL_REPORT_PLANNING_MCP_TIMEOUT_MS:6000}
+        around-radius-meters: ${MEDICAL_REPORT_PLANNING_MCP_AROUND_RADIUS_METERS:5000}
+        hospital-keyword: ${MEDICAL_REPORT_PLANNING_MCP_HOSPITAL_KEYWORD:医院}
+        hospital-types: ${MEDICAL_REPORT_PLANNING_MCP_HOSPITAL_TYPES:090100|090101|090102|090400}
+      fallback:
+        hospitals:
+          - name: 中山大学附属第一医院
+            address: 广州市越秀区中山二路58号
+            tier3a: true
+            latitude: 23.1293
+            longitude: 113.2862
+          - name: 广东省人民医院
+            address: 广州市越秀区中山二路106号
+            tier3a: true
+            latitude: 23.1271
+            longitude: 113.2816
+          - name: 中山大学孙逸仙纪念医院
+            address: 广州市越秀区沿江西路107号
+            tier3a: true
+            latitude: 23.1119
+            longitude: 113.2505
+          - name: 南方医科大学南方医院
+            address: 广州市白云区广州大道北1838号
+            tier3a: true
+            latitude: 23.1909
+            longitude: 113.3256
+          - name: 广州医科大学附属第一医院
+            address: 广州市越秀区沿江西路151号
+            tier3a: true
+            latitude: 23.1154
+            longitude: 113.2569

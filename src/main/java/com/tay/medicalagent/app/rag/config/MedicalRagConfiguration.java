@@ -1,6 +1,5 @@
 package com.tay.medicalagent.app.rag.config;
 
-import com.tay.medicalagent.app.rag.embedding.MedicalQueryAwareEmbeddingModel;
 import com.tay.medicalagent.app.rag.vectorstore.ElasticsearchBackedVectorStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,9 +12,10 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Primary;
 import org.elasticsearch.client.RestClient;
 
 import java.io.File;
@@ -36,15 +36,13 @@ public class MedicalRagConfiguration {
     private static final Logger log = LoggerFactory.getLogger(MedicalRagConfiguration.class);
 
     @Bean
-    @Primary
-    @ConditionalOnMissingBean(EmbeddingModel.class)
-    public EmbeddingModel medicalRagEmbeddingModel(MedicalQueryAwareEmbeddingModel medicalQueryAwareEmbeddingModel) {
-        return medicalQueryAwareEmbeddingModel;
-    }
-
-    @Bean
     @ConditionalOnProperty(prefix = "medical.rag.vector-store", name = "type", havingValue = "simple")
-    public VectorStore simpleMedicalVectorStore(EmbeddingModel embeddingModel, MedicalRagProperties medicalRagProperties) {
+    public VectorStore simpleMedicalVectorStore(
+            @Qualifier("medicalQueryAwareEmbeddingModel") EmbeddingModel medicalEmbeddingModel,
+            @Qualifier("testEmbeddingModel") ObjectProvider<EmbeddingModel> testEmbeddingModelProvider,
+            MedicalRagProperties medicalRagProperties
+    ) {
+        EmbeddingModel embeddingModel = testEmbeddingModelProvider.getIfAvailable(() -> medicalEmbeddingModel);
         return buildSimpleVectorStore(embeddingModel, medicalRagProperties);
     }
 
@@ -52,10 +50,12 @@ public class MedicalRagConfiguration {
     @ConditionalOnProperty(prefix = "medical.rag.vector-store", name = "type", havingValue = "elasticsearch", matchIfMissing = true)
     public VectorStore elasticsearchMedicalVectorStore(
             RestClient restClient,
-            EmbeddingModel embeddingModel,
+            @Qualifier("medicalQueryAwareEmbeddingModel") EmbeddingModel medicalEmbeddingModel,
+            @Qualifier("testEmbeddingModel") ObjectProvider<EmbeddingModel> testEmbeddingModelProvider,
             MedicalRagProperties medicalRagProperties,
             MedicalRagElasticsearchProperties elasticsearchProperties
     ) {
+        EmbeddingModel embeddingModel = testEmbeddingModelProvider.getIfAvailable(() -> medicalEmbeddingModel);
         try {
             return buildElasticsearchVectorStore(restClient, embeddingModel, elasticsearchProperties);
         }

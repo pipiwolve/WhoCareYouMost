@@ -2,7 +2,9 @@ package com.tay.medicalagent.controller.v1;
 
 import com.tay.medicalagent.app.MedicalApp;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalReportPdfFile;
+import com.tay.medicalagent.app.report.MedicalReportSnapshot;
 import com.tay.medicalagent.session.ConsultationSession;
 import com.tay.medicalagent.session.ConsultationSessionService;
 import com.tay.medicalagent.app.service.report.ReportNotExportableException;
@@ -15,11 +17,14 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
+import java.time.Instant;
 
 import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.startsWith;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -61,10 +66,27 @@ class ReportControllerTest {
                 List.of(),
                 ""
         );
-        when(medicalApp.generateReportFromThread("thread_report_1", "usr_report_1")).thenReturn(report);
+        when(medicalApp.getOrCreateReportSnapshot(
+                consultationSession.sessionId(),
+                "thread_report_1",
+                "usr_report_1",
+                null,
+                null
+        )).thenReturn(new MedicalReportSnapshot(
+                consultationSession.sessionId(),
+                "thread_report_1",
+                "usr_report_1",
+                Instant.now(),
+                "conversation",
+                "profile",
+                "location",
+                report,
+                MedicalHospitalPlanningSummary.empty()
+        ));
 
         mockMvc.perform(get("/v1/reports/{sessionId}", consultationSession.sessionId()))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("success"))
                 .andExpect(jsonPath("$.data.ready").value(false))
                 .andExpect(jsonPath("$.data.reason").value("当前会话暂无足够问诊内容"))
                 .andExpect(jsonPath("$.data.report").value(nullValue()));
@@ -86,11 +108,29 @@ class ReportControllerTest {
                 List.of("持续高热", "呼吸困难"),
                 "建议先观察"
         );
-        when(medicalApp.generateReportFromThread("thread_report_2", "usr_report_2")).thenReturn(report);
+        when(medicalApp.getOrCreateReportSnapshot(
+                consultationSession.sessionId(),
+                "thread_report_2",
+                "usr_report_2",
+                null,
+                null
+        )).thenReturn(new MedicalReportSnapshot(
+                consultationSession.sessionId(),
+                "thread_report_2",
+                "usr_report_2",
+                Instant.now(),
+                "conversation",
+                "profile",
+                "location",
+                report,
+                MedicalHospitalPlanningSummary.empty()
+        ));
 
         mockMvc.perform(get("/v1/reports/{sessionId}", consultationSession.sessionId()))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("success"))
                 .andExpect(jsonPath("$.data.ready").value(true))
+                .andExpect(jsonPath("$.data.reason").value("报告生成完毕"))
                 .andExpect(jsonPath("$.data.report.title").value("thread_report_2的医疗诊断报告"))
                 .andExpect(jsonPath("$.data.report.riskLevel").value("中风险"))
                 .andExpect(jsonPath("$.data.report.basis[0]").value("发热"))
@@ -112,7 +152,9 @@ class ReportControllerTest {
         when(medicalApp.exportReportPdf(
                 eq(consultationSession.sessionId()),
                 eq("thread_pdf_1"),
-                eq("usr_pdf_1")
+                eq("usr_pdf_1"),
+                isNull(),
+                isNull()
         )).thenThrow(new ReportNotExportableException("当前会话暂无可导出的诊断报告"));
 
         mockMvc.perform(get("/v1/reports/{sessionId}/pdf", consultationSession.sessionId()))
@@ -126,7 +168,9 @@ class ReportControllerTest {
         when(medicalApp.exportReportPdf(
                 eq(consultationSession.sessionId()),
                 eq("thread_pdf_2"),
-                eq("usr_pdf_2")
+                eq("usr_pdf_2"),
+                isNull(),
+                isNull()
         )).thenReturn(new MedicalReportPdfFile(
                 "medical-report-" + consultationSession.sessionId() + ".pdf",
                 "application/pdf",
@@ -142,4 +186,46 @@ class ReportControllerTest {
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
                         .string("Cache-Control", org.hamcrest.Matchers.containsString("no-store")));
     }
+
+    @Test
+    void downloadReportPdfShouldEncodeUnicodeFileName() throws Exception {
+        ConsultationSession consultationSession = consultationSessionService.createSession("usr_pdf_3", "thread_pdf_3");
+        when(medicalApp.exportReportPdf(
+                eq(consultationSession.sessionId()),
+                eq("thread_pdf_3"),
+                eq("usr_pdf_3"),
+                isNull(),
+                isNull()
+        )).thenReturn(new MedicalReportPdfFile(
+                "张三的医疗诊断报告.pdf",
+                "application/pdf",
+                "%PDF-test".getBytes()
+        ));
+
+        mockMvc.perform(get("/v1/reports/{sessionId}/pdf", consultationSession.sessionId()))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                        .string("Content-Disposition",
+                                "attachment; filename=\"pdf\"; filename*=UTF-8''%E5%BC%A0%E4%B8%89%E7%9A%84%E5%8C%BB%E7%96%97%E8%AF%8A%E6%96%AD%E6%8A%A5%E5%91%8A.pdf"));
+    }
+
+                @Test
+                void updateLocationShouldPersistCoordinatesWhenConsentGranted() throws Exception {
+                                ConsultationSession consultationSession = consultationSessionService.createSession("usr_loc_1", "thread_loc_1");
+
+                                mockMvc.perform(post("/v1/reports/{sessionId}/location", consultationSession.sessionId())
+                                                                                                .contentType("application/json")
+                                                                                                .content("""
+                                                                                                                                {
+                                                                                                                                        "latitude": 31.23,
+                                                                                                                                        "longitude": 121.47,
+                                                                                                                                        "consentGranted": true
+                                                                                                                            }
+                                                                """))
+                                                                .andExpect(status().isOk())
+                                                                .andExpect(jsonPath("$.code").value(200))
+                                                                .andExpect(jsonPath("$.message").value("success"));
+
+                org.mockito.Mockito.verify(medicalApp).invalidateReportSnapshot(consultationSession.sessionId());
+                }
 }

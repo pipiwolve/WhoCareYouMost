@@ -4,3 +4,7 @@ medical:
       type: simple
     retrieval:
       strategy: vector
+  report:
+    planning:
+      mcp-enabled: false
+      agent-enabled: false

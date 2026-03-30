@@ -1,6 +1,7 @@
 package com.tay.medicalagent.app.service.report;
 
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalReportPdfFile;
 
 /**
@@ -15,7 +16,14 @@ public interface MedicalReportPdfExportService {
      * @param threadId 会话线程 ID
      * @param userId 用户唯一标识
      * @param report 结构化报告
+         * @param planningSummary 医院规划汇总
      * @return PDF 文件结果
      */
-    MedicalReportPdfFile exportReportPdf(String sessionId, String threadId, String userId, MedicalDiagnosisReport report);
+        MedicalReportPdfFile exportReportPdf(
+            String sessionId,
+            String threadId,
+            String userId,
+            MedicalDiagnosisReport report,
+            MedicalHospitalPlanningSummary planningSummary
+        );
 }

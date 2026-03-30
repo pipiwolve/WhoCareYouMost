@@ -8,6 +8,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tay.medicalagent.app.prompt.MedicalPrompts;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalReportPdfFile;
 import com.tay.medicalagent.app.report.MedicalReportPdfPayload;
 import com.tay.medicalagent.app.report.MedicalReportPdfToolResult;
@@ -47,7 +48,8 @@ public class DefaultMedicalReportPdfExportService implements MedicalReportPdfExp
             String sessionId,
             String threadId,
             String userId,
-            MedicalDiagnosisReport report
+            MedicalDiagnosisReport report,
+            MedicalHospitalPlanningSummary planningSummary
     ) {
         if (report == null || !report.shouldGenerateReport()) {
             throw new ReportNotExportableException("当前会话暂无可导出的诊断报告");
@@ -58,9 +60,10 @@ public class DefaultMedicalReportPdfExportService implements MedicalReportPdfExp
                 normalizeText(threadId, "当前线程"),
                 normalizeText(userId, "anonymous"),
                 OffsetDateTime.now(),
-                "medical-report-" + normalizeSessionId(sessionId) + ".pdf",
+                buildPdfFileName(report, sessionId),
                 MedicalPrompts.DEFAULT_REPORT_DISCLAIMER,
-                report
+                report,
+                planningSummary == null ? MedicalHospitalPlanningSummary.empty() : planningSummary
         );
 
         try {
@@ -116,6 +119,29 @@ public class DefaultMedicalReportPdfExportService implements MedicalReportPdfExp
 
     private String normalizeSessionId(String sessionId) {
         return normalizeText(sessionId, "unknown-session");
+    }
+
+    private String buildPdfFileName(MedicalDiagnosisReport report, String sessionId) {
+        String reportTitle = report == null ? "" : normalizeText(report.reportTitle(), "");
+        String sanitizedTitle = sanitizeFileName(reportTitle);
+        if (!sanitizedTitle.isBlank()) {
+            return sanitizedTitle + ".pdf";
+        }
+        return "medical-report-" + normalizeSessionId(sessionId) + ".pdf";
+    }
+
+    private String sanitizeFileName(String candidate) {
+        if (candidate == null || candidate.isBlank()) {
+            return "";
+        }
+        String sanitized = candidate.trim()
+                .replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]+", "-")
+                .replaceAll("\\s+", " ")
+                .replaceAll("^[.\\s-]+|[.\\s-]+$", "");
+        if (sanitized.length() > 120) {
+            sanitized = sanitized.substring(0, 120).trim();
+        }
+        return sanitized;
     }
 
     private String normalizeText(String value, String fallback) {

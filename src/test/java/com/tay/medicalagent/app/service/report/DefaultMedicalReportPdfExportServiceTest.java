@@ -2,6 +2,7 @@ package com.tay.medicalagent.app.service.report;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalReportPdfFile;
 import com.tay.medicalagent.app.service.model.MedicalAiModelProvider;
 import org.junit.jupiter.api.Test;
@@ -43,7 +44,7 @@ class DefaultMedicalReportPdfExportServiceTest {
                 "thread_export",
                 "usr_export",
                 new MedicalDiagnosisReport(
-                        "thread_export的医疗诊断报告",
+                        "张三的医疗诊断报告",
                         true,
                         "CONFIRMED",
                         "中风险",
@@ -54,10 +55,11 @@ class DefaultMedicalReportPdfExportServiceTest {
                         List.of("补液休息"),
                         List.of("持续高热"),
                         "建议观察"
-                )
+                ),
+                MedicalHospitalPlanningSummary.empty()
         );
 
-        assertEquals("medical-report-sess_export.pdf", pdfFile.fileName());
+        assertEquals("张三的医疗诊断报告.pdf", pdfFile.fileName());
         assertEquals("application/pdf", pdfFile.contentType());
         assertArrayEquals(pdfBytes, pdfFile.content());
         verify(renderer).render(org.mockito.ArgumentMatchers.any());
@@ -89,7 +91,8 @@ class DefaultMedicalReportPdfExportServiceTest {
                         List.of(),
                         List.of(),
                         ""
-                )
+                ),
+                MedicalHospitalPlanningSummary.empty()
         ));
     }
 

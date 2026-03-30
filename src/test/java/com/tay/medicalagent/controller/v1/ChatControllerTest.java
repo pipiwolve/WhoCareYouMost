@@ -5,10 +5,16 @@ import com.tay.medicalagent.app.MedicalApp;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
 import com.tay.medicalagent.app.chat.StructuredMedicalReply;
 import com.tay.medicalagent.app.rag.model.KnowledgeSource;
+import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
+import com.tay.medicalagent.app.report.MedicalHospitalRecommendation;
+import com.tay.medicalagent.app.report.MedicalHospitalRouteOption;
+import com.tay.medicalagent.app.report.MedicalReportSnapshot;
 import com.tay.medicalagent.app.service.model.MedicalModelConfigurationException;
 import com.tay.medicalagent.app.service.report.ReportTriggerLevel;
 import com.tay.medicalagent.session.ConsultationSession;
 import com.tay.medicalagent.session.ConsultationSessionService;
+import com.tay.medicalagent.web.dto.ChatCompletionRequest;
 import com.tay.medicalagent.web.support.GlobalExceptionHandler;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,8 +26,16 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.util.List;
+import java.time.Instant;
+import java.util.Optional;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
@@ -37,6 +51,9 @@ class ChatControllerTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private ChatController chatController;
 
     @Autowired
     private ConsultationSessionService consultationSessionService;
@@ -128,6 +145,54 @@ class ChatControllerTest {
                 structuredReply
         );
         when(medicalApp.doChat("我有点头晕", "thread_2", "usr_2")).thenReturn(medicalChatResult);
+        when(medicalApp.prepareReportPreview(
+                consultationSession.sessionId(),
+                "我有点头晕",
+                "thread_2",
+                "usr_2",
+                null,
+                null,
+                medicalChatResult
+        )).thenReturn(Optional.of(new MedicalReportSnapshot(
+                consultationSession.sessionId(),
+                "thread_2",
+                "usr_2",
+                Instant.now(),
+                "conversation",
+                "profile",
+                "location",
+                new MedicalDiagnosisReport(
+                        "thread_2的医疗诊断报告",
+                        true,
+                        "CONFIRMED",
+                        "低风险",
+                        "轻度头晕",
+                        "考虑疲劳相关不适",
+                        "",
+                        List.of("病程较短"),
+                        List.of("多休息"),
+                        List.of("出现胸痛"),
+                        "建议多休息。"
+                ),
+                new MedicalHospitalPlanningSummary(
+                        List.of(new MedicalHospitalRecommendation(
+                                "测试医院",
+                                "测试地址",
+                                true,
+                                800L,
+                                List.of(new MedicalHospitalRouteOption(
+                                        "WALK",
+                                        900L,
+                                        12L,
+                                        "步行方案",
+                                        List.of("步行200米前往地铁站", "步行700米到达医院")
+                                ))
+                        )),
+                        true,
+                        "",
+                        "ok"
+                )
+        )));
 
         mockMvc.perform(post("/v1/chat/completions")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -146,6 +211,9 @@ class ChatControllerTest {
                 .andExpect(jsonPath("$.data.reportReason").value("当前问诊信息较完整，可按需生成诊断报告。"))
                 .andExpect(jsonPath("$.data.reportTriggerLevel").value("suggested"))
                 .andExpect(jsonPath("$.data.reportActionText").value("当前问诊信息较完整，可按需生成诊断报告。"))
+                .andExpect(jsonPath("$.data.reportPreview.title").value("thread_2的医疗诊断报告"))
+                .andExpect(jsonPath("$.data.reportPreview.hospitals[0].name").value("测试医院"))
+                .andExpect(jsonPath("$.data.reportPreview.hospitals[0].routes[0].steps[0]").value("步行200米前往地铁站"))
                 .andExpect(jsonPath("$.data.sources[0].sourceId").value("kb-1"))
                 .andExpect(jsonPath("$.data.sources[0].title").value("胸痛处理"))
                 .andExpect(jsonPath("$.data.sources[0].uri").doesNotExist());
@@ -311,5 +379,98 @@ class ChatControllerTest {
         assertTrue(payload.contains("MODEL_CONFIG_ERROR"));
         assertTrue(payload.contains("DASHSCOPE_API_KEY"));
         assertTrue(payload.contains("AI_DASHSCOPE_API_KEY"));
+    }
+
+    @Test
+    void emitStreamResponseShouldPushChunksBeforePreparingReportPreview() throws Exception {
+        ConsultationSession consultationSession = consultationSessionService.createSession("usr_seq", "thread_seq");
+        StructuredMedicalReply structuredReply = new StructuredMedicalReply(
+                "中风险",
+                "建议尽快线下评估。",
+                List.of("胸闷反复出现"),
+                List.of("监测症状变化"),
+                List.of("胸痛加重"),
+                List.of("症状持续多久"),
+                "本回答由AI生成，仅供健康信息参考，不能替代医生面诊。"
+        );
+        MedicalChatResult medicalChatResult = new MedicalChatResult(
+                "thread_seq",
+                "usr_seq",
+                "建议尽快线下评估，并注意观察症状变化。",
+                true,
+                "当前回复已经形成风险判断或排查方向，可生成诊断报告。",
+                ReportTriggerLevel.RECOMMENDED,
+                "生成诊断报告",
+                false,
+                null,
+                false,
+                List.of(),
+                structuredReply
+        );
+        CountDownLatch firstChunkSent = new CountDownLatch(1);
+        CountDownLatch releasePreview = new CountDownLatch(1);
+
+        when(medicalApp.doChat("我胸闷乏力", "thread_seq", "usr_seq")).thenReturn(medicalChatResult);
+        when(medicalApp.prepareReportPreview(
+                consultationSession.sessionId(),
+                "我胸闷乏力",
+                "thread_seq",
+                "usr_seq",
+                null,
+                null,
+                medicalChatResult
+        )).thenAnswer(invocation -> {
+            assertEquals(0L, firstChunkSent.getCount(), "应先把 chunk 推给前端，再准备报告预览");
+            assertTrue(releasePreview.await(1, TimeUnit.SECONDS));
+            return Optional.empty();
+        });
+
+        RecordingSink sink = new RecordingSink(firstChunkSent);
+        ChatCompletionRequest request = new ChatCompletionRequest(consultationSession.sessionId(), "我胸闷乏力", null);
+
+        CompletableFuture<Void> task = CompletableFuture.runAsync(() -> chatController.emitStreamResponse(request, sink));
+
+        assertTrue(firstChunkSent.await(500, TimeUnit.MILLISECONDS));
+        releasePreview.countDown();
+        task.get(1, TimeUnit.SECONDS);
+
+        assertEquals(List.of("chunk", "chunk", "done"), sink.eventNames());
+        assertTrue(sink.completed());
+    }
+
+    private static final class RecordingSink implements ChatController.ChatSseSink {
+
+        private final CountDownLatch firstChunkSent;
+        private final List<String> eventNames = new CopyOnWriteArrayList<>();
+        private volatile boolean completed;
+
+        private RecordingSink(CountDownLatch firstChunkSent) {
+            this.firstChunkSent = firstChunkSent;
+        }
+
+        @Override
+        public boolean send(String eventName, Object payload) {
+            eventNames.add(eventName);
+            if ("chunk".equals(eventName)) {
+                Map<?, ?> chunkPayload = (Map<?, ?>) payload;
+                if (Integer.valueOf(0).equals(chunkPayload.get("index"))) {
+                    firstChunkSent.countDown();
+                }
+            }
+            return true;
+        }
+
+        @Override
+        public void complete() {
+            completed = true;
+        }
+
+        private List<String> eventNames() {
+            return List.copyOf(eventNames);
+        }
+
+        private boolean completed() {
+            return completed;
+        }
     }
 }

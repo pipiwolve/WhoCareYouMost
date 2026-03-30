@@ -15,6 +15,7 @@ public record ChatCompletionResponse(
         String reportActionText,
         boolean reportGenerated,
         ReportViewDto report,
+        ReportViewDto reportPreview,
         boolean ragApplied,
         List<KnowledgeSourceView> sources
 ) {

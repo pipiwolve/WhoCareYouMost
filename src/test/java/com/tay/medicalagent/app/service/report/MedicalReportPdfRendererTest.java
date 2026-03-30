@@ -3,6 +3,9 @@ package com.tay.medicalagent.app.service.report;
 import com.lowagie.text.pdf.PdfReader;
 import com.lowagie.text.pdf.parser.PdfTextExtractor;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
+import com.tay.medicalagent.app.report.MedicalHospitalRecommendation;
+import com.tay.medicalagent.app.report.MedicalHospitalRouteOption;
 import com.tay.medicalagent.app.report.MedicalReportPdfPayload;
 import org.junit.jupiter.api.Test;
 
@@ -43,6 +46,9 @@ class MedicalReportPdfRendererTest {
                     "补液休息",
                     "升级就医信号",
                     "持续高热",
+                        "就近医院与路线规划",
+                        "复旦大学附属华山医院",
+                        "步行",
                     "免责声明",
                     "本报告由AI生成，仅供参考，不能替代专业医生诊断。"
             );
@@ -69,7 +75,23 @@ class MedicalReportPdfRendererTest {
                         List.of("补液休息", "观察体温"),
                         List.of("持续高热", "呼吸困难"),
                         "建议先观察"
-                )
+                    ),
+                    new MedicalHospitalPlanningSummary(
+                        List.of(new MedicalHospitalRecommendation(
+                            "复旦大学附属华山医院",
+                            "上海市静安区乌鲁木齐中路12号",
+                            true,
+                            1800,
+                            List.of(
+                                new MedicalHospitalRouteOption("WALK", 1800, 24, "步行方案"),
+                                new MedicalHospitalRouteOption("DRIVE", 1800, 5, "驾车方案"),
+                                new MedicalHospitalRouteOption("TRANSIT", 1800, 12, "公交方案")
+                            )
+                        )),
+                        true,
+                        "",
+                        "ok"
+                    )
         );
     }
 

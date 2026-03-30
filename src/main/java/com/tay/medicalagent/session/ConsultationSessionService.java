@@ -35,10 +35,31 @@ public class ConsultationSessionService {
                 threadId.trim(),
                 userId.trim(),
                 now,
-                now
+                now,
+                null,
+                null,
+                null
         );
         consultationSessionRepository.save(consultationSession);
         return consultationSession;
+    }
+
+    public ConsultationSession updateLocation(String sessionId, double latitude, double longitude, boolean consentGranted) {
+        if (!consentGranted) {
+            throw new IllegalArgumentException("请先完成位置授权");
+        }
+        if (latitude < -90.0 || latitude > 90.0) {
+            throw new IllegalArgumentException("latitude 超出范围");
+        }
+        if (longitude < -180.0 || longitude > 180.0) {
+            throw new IllegalArgumentException("longitude 超出范围");
+        }
+
+        ConsultationSession consultationSession = getRequiredSession(sessionId);
+        ConsultationSession updatedSession = consultationSession.withLocation(latitude, longitude, Instant.now())
+                .touch(Instant.now());
+        consultationSessionRepository.save(updatedSession);
+        return updatedSession;
     }
 
     public ConsultationSession getRequiredSession(String sessionId) {

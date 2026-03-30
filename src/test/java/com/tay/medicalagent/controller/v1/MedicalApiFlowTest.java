@@ -6,6 +6,8 @@ import com.tay.medicalagent.app.MedicalApp;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
 import com.tay.medicalagent.app.chat.StructuredMedicalReply;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
+import com.tay.medicalagent.app.report.MedicalReportSnapshot;
 import com.tay.medicalagent.app.service.report.ReportTriggerLevel;
 import com.tay.medicalagent.web.support.GlobalExceptionHandler;
 import org.junit.jupiter.api.Test;
@@ -18,7 +20,12 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.util.List;
+import java.time.Instant;
+import java.util.Optional;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -81,6 +88,15 @@ class MedicalApiFlowTest {
                         "本回答由AI生成，仅供健康信息参考，不能替代医生面诊。"
                 )
         ));
+        when(medicalApp.prepareReportPreview(
+                eq(sessionId),
+                eq("我头晕"),
+                eq("thread-flow-1"),
+                eq(userId),
+                isNull(),
+                isNull(),
+                any(MedicalChatResult.class)
+        )).thenReturn(Optional.empty());
 
         mockMvc.perform(post("/v1/chat/completions")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -92,13 +108,14 @@ class MedicalApiFlowTest {
                                 }
                                 """.formatted(sessionId)))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("success"))
                 .andExpect(jsonPath("$.data.sessionId").value(sessionId))
                 .andExpect(jsonPath("$.data.reply").value("建议先休息并补充水分。"))
                 .andExpect(jsonPath("$.data.structuredReply.summary").value("建议先休息并补充水分。"))
                 .andExpect(jsonPath("$.data.reportTriggerLevel").value("suggested"))
                 .andExpect(jsonPath("$.data.reportActionText").value("当前问诊信息较完整，可按需生成诊断报告。"));
 
-        when(medicalApp.generateReportFromThread("thread-flow-1", userId)).thenReturn(new MedicalDiagnosisReport(
+        MedicalDiagnosisReport report = new MedicalDiagnosisReport(
                 "thread-flow-1的医疗诊断报告",
                 true,
                 "CONFIRMED",
@@ -110,14 +127,29 @@ class MedicalApiFlowTest {
                 List.of("充分休息"),
                 List.of("意识模糊"),
                 "建议观察"
-        ));
+        );
+        when(medicalApp.getOrCreateReportSnapshot(sessionId, "thread-flow-1", userId, null, null)).thenReturn(
+                new MedicalReportSnapshot(
+                        sessionId,
+                        "thread-flow-1",
+                        userId,
+                        Instant.now(),
+                        "conversation",
+                        "profile",
+                        "location",
+                        report,
+                        MedicalHospitalPlanningSummary.empty()
+                )
+        );
 
         mockMvc.perform(get("/v1/reports/{sessionId}", sessionId))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("success"))
                 .andExpect(jsonPath("$.data.ready").value(true))
+                .andExpect(jsonPath("$.data.reason").value("报告生成完毕"))
                 .andExpect(jsonPath("$.data.report.riskLevel").value("低风险"));
 
         verify(medicalApp).doChat("我头晕", "thread-flow-1", userId);
-        verify(medicalApp).generateReportFromThread("thread-flow-1", userId);
+        verify(medicalApp).getOrCreateReportSnapshot(sessionId, "thread-flow-1", userId, null, null);
     }
 }
