@@ -25,7 +25,97 @@ public class DefaultMedicalPlanningIntentResolver implements MedicalPlanningInte
             "帮我找医院",
             "就近医院",
             "附近急诊",
-            "附近门诊"
+            "附近门诊",
+            "医院路线",
+            "医院路线规划",
+            "规划医院路线",
+            "最近医院",
+            "最近的医院",
+            "附近医院怎么走",
+            "去医院怎么走",
+            "医院怎么去",
+            "导航去医院"
+    );
+    private static final List<String> HOSPITAL_TARGET_WORDS = List.of("医院", "门诊", "急诊");
+    private static final List<String> ADDRESS_SIGNAL_WORDS = List.of(
+            "帮我找",
+            "帮我查",
+            "帮我搜",
+            "找一下",
+            "查一下",
+            "搜一下",
+            "查找",
+            "搜索",
+            "看看",
+            "帮我看看",
+            "推荐",
+            "帮我推荐",
+            "去哪家",
+            "去哪个"
+    );
+    private static final List<String> SPECIALIZED_MEDICAL_FACILITY_PHRASES = List.of(
+            "心理医院",
+            "心理科",
+            "精神卫生中心",
+            "精神专科医院",
+            "精神科医院",
+            "儿科医院",
+            "妇幼保健院",
+            "妇产医院",
+            "儿童医院",
+            "口腔医院",
+            "骨科医院",
+            "心血管医院",
+            "综合医院",
+            "胸痛中心",
+            "卒中中心"
+    );
+    private static final List<String> PSYCHIATRY_FACILITY_PHRASES = List.of(
+            "心理医院",
+            "心理科",
+            "心理咨询",
+            "精神卫生",
+            "精神卫生中心",
+            "精神专科医院",
+            "精神科医院"
+    );
+    private static final List<String> PEDIATRIC_FACILITY_PHRASES = List.of("儿童医院", "儿科医院");
+    private static final List<String> OBSTETRIC_FACILITY_PHRASES = List.of("妇幼保健院", "妇产医院");
+    private static final List<String> DENTAL_FACILITY_PHRASES = List.of("口腔医院");
+    private static final List<String> ORTHOPEDIC_FACILITY_PHRASES = List.of("骨科医院");
+    private static final List<String> CARDIAC_FACILITY_PHRASES = List.of("心血管医院");
+    private static final List<String> NEUROLOGY_SIGNAL_WORDS = List.of(
+            "头痛",
+            "头晕",
+            "头昏",
+            "偏瘫",
+            "言语不清",
+            "抽搐",
+            "癫痫",
+            "卒中"
+    );
+    private static final List<String> ROUTE_SIGNAL_WORDS = List.of("路线", "规划", "导航", "怎么走", "怎么去");
+    private static final List<String> DISTANCE_SIGNAL_WORDS = List.of("附近", "就近", "最近");
+    private static final int MAX_NEARBY_FACILITY_GAP_CHARS = 8;
+    private static final List<String> GENERIC_HOSPITAL_DECISION_PHRASES = List.of(
+            "去医院吗",
+            "要不要去医院",
+            "需不需要去医院",
+            "需要去医院吗",
+            "我需要去医院吗",
+            "该不该去医院",
+            "是否去医院",
+            "是否要去医院"
+    );
+    private static final List<String> GENERIC_DECISION_PREFIXES = List.of(
+            "要不要去",
+            "需不需要去",
+            "需要去",
+            "我需要去",
+            "该不该去",
+            "是否去",
+            "是否要去",
+            "是否需要去"
     );
 
     private static final List<String> URGENT_PHRASES = List.of(
@@ -47,7 +137,7 @@ public class DefaultMedicalPlanningIntentResolver implements MedicalPlanningInte
     @Override
     public boolean shouldPrepareChatPreview(String latestUserMessage, MedicalChatResult medicalChatResult) {
         if (medicalChatResult == null) {
-            return containsAny(latestUserMessage, EXPLICIT_HOSPITAL_REQUEST_PHRASES);
+            return isExplicitHospitalRequest(latestUserMessage);
         }
         if (medicalChatResult.reportGenerated()) {
             return true;
@@ -55,7 +145,24 @@ public class DefaultMedicalPlanningIntentResolver implements MedicalPlanningInte
         if (medicalChatResult.reportTriggerLevel() != null && medicalChatResult.reportTriggerLevel().isAvailable()) {
             return true;
         }
-        return containsAny(latestUserMessage, EXPLICIT_HOSPITAL_REQUEST_PHRASES);
+        return isExplicitHospitalRequest(latestUserMessage);
+    }
+
+    @Override
+    public boolean isExplicitHospitalRequest(String latestUserMessage) {
+        String normalized = normalizeForMatch(latestUserMessage);
+        if (normalized.isBlank()) {
+            return false;
+        }
+        if (containsAnyNormalized(normalized, EXPLICIT_HOSPITAL_REQUEST_PHRASES)) {
+            return true;
+        }
+        if (containsGenericFacilityDecisionSignal(normalized)) {
+            return false;
+        }
+        return containsFacilityRouteSignal(normalized)
+                || containsNearbyFacilitySignal(normalized)
+                || containsAddressFacilitySignal(normalized);
     }
 
     @Override
@@ -69,7 +176,7 @@ public class DefaultMedicalPlanningIntentResolver implements MedicalPlanningInte
             return MedicalPlanningIntent.disabled("无可用于规划的报告");
         }
 
-        boolean explicitHospitalRequest = containsAny(latestUserMessage, EXPLICIT_HOSPITAL_REQUEST_PHRASES);
+        boolean explicitHospitalRequest = isExplicitHospitalRequest(latestUserMessage);
         boolean planningRequested = explicitHospitalRequest
                 || (reportTriggerLevel != null && reportTriggerLevel.isAvailable())
                 || report.shouldGenerateReport();
@@ -121,28 +228,47 @@ public class DefaultMedicalPlanningIntentResolver implements MedicalPlanningInte
         if (reportTriggerLevel == ReportTriggerLevel.URGENT || containsAny(text, URGENT_PHRASES)) {
             return profile("emergency", "急诊", "090101|090100|090102", 10000, 3, true);
         }
+        if (containsAny(text, PSYCHIATRY_FACILITY_PHRASES)) {
+            return profile("psychiatry", "精神卫生中心", defaultTypes(), 6000, defaultTopK(), false);
+        }
+        if (containsAny(text, CARDIAC_FACILITY_PHRASES)) {
+            return profile("cardiac", "心血管医院", "090101|090100|090102", 12000, 3, true);
+        }
         if (containsAny(text, List.of("胸痛", "胸闷", "心慌", "心悸", "心前区", "冠脉", "心梗", "心脏"))) {
             return profile("cardiac", "心血管医院", "090101|090100|090102", 12000, 3, true);
         }
         if (containsAny(text, List.of("呼吸困难", "气喘", "喘", "咳嗽", "肺炎", "呼吸", "哮喘"))) {
             return profile("respiratory", "呼吸科 医院", defaultTypes(), 6000, defaultTopK(), true);
         }
-        if (containsAny(text, List.of("头痛", "头晕", "头昏", "偏瘫", "言语不清", "抽搐", "癫痫", "卒中", "中风"))) {
+        if (containsAny(text, PEDIATRIC_FACILITY_PHRASES)) {
+            return profile("pediatric", "儿童医院", "090101|090100|090102", 8000, 3, true);
+        }
+        if (containsNeurologySignal(text)) {
             return profile("neurology", "神经内科 医院", "090101|090100|090102", 8000, 3, true);
         }
         if (containsAny(text, List.of("儿童", "小孩", "宝宝", "婴儿", "儿科", "高热惊厥"))) {
             return profile("pediatric", "儿童医院", "090101|090100|090102", 8000, 3, true);
         }
+        if (containsAny(text, OBSTETRIC_FACILITY_PHRASES)) {
+            return profile("obstetric", "妇产医院", "090101|090100|090102", 8000, 3, true);
+        }
         if (containsAny(text, List.of("孕", "妊娠", "产后", "阴道出血", "宫缩", "胎动", "妇产"))) {
             return profile("obstetric", "妇产医院", "090101|090100|090102", 8000, 3, true);
+        }
+        if (containsAny(text, ORTHOPEDIC_FACILITY_PHRASES)) {
+            return profile("orthopedic", "骨科医院", defaultTypes(), 6000, defaultTopK(), false);
         }
         if (containsAny(text, List.of("骨折", "扭伤", "外伤", "关节", "腰痛", "颈椎", "背痛", "骨科"))) {
             return profile("orthopedic", "骨科医院", defaultTypes(), 6000, defaultTopK(), false);
         }
+        if (containsAny(text, DENTAL_FACILITY_PHRASES)) {
+            return profile("dental", "口腔医院", defaultTypes(), 5000, defaultTopK(), false);
+        }
         if (containsAny(text, List.of("牙痛", "口腔", "牙龈", "牙齿", "智齿"))) {
             return profile("dental", "口腔医院", defaultTypes(), 5000, defaultTopK(), false);
         }
-        if (containsAny(text, List.of("焦虑", "抑郁", "惊恐", "自杀", "失眠", "情绪", "精神"))) {
+        if (containsAny(text, List.of("焦虑", "抑郁", "惊恐", "自杀", "失眠", "情绪", "精神"))
+                || containsAny(text, PSYCHIATRY_FACILITY_PHRASES)) {
             return profile("psychiatry", "精神卫生中心", defaultTypes(), 6000, defaultTopK(), false);
         }
         return profile("default", defaultKeyword(), defaultTypes(), defaultRadius(), defaultTopK(), false);
@@ -161,6 +287,10 @@ public class DefaultMedicalPlanningIntentResolver implements MedicalPlanningInte
 
     private boolean containsAny(String text, List<String> phrases) {
         String normalized = normalizeForMatch(text);
+        return containsAnyNormalized(normalized, phrases);
+    }
+
+    private boolean containsAnyNormalized(String normalized, List<String> phrases) {
         if (normalized.isBlank()) {
             return false;
         }
@@ -172,11 +302,111 @@ public class DefaultMedicalPlanningIntentResolver implements MedicalPlanningInte
         return false;
     }
 
+    private boolean containsFacilityRouteSignal(String normalized) {
+        return containsMedicalFacility(normalized)
+                && containsAnyNormalized(normalized, ROUTE_SIGNAL_WORDS);
+    }
+
+    private boolean containsNearbyFacilitySignal(String normalized) {
+        return hasNearbyFacilityMatch(normalized, HOSPITAL_TARGET_WORDS)
+                || hasNearbyFacilityMatch(normalized, SPECIALIZED_MEDICAL_FACILITY_PHRASES);
+    }
+
+    private boolean containsAddressFacilitySignal(String normalized) {
+        return containsMedicalFacility(normalized)
+                && containsAnyNormalized(normalized, ADDRESS_SIGNAL_WORDS);
+    }
+
+    private boolean containsGenericFacilityDecisionSignal(String normalized) {
+        if (containsAnyNormalized(normalized, GENERIC_HOSPITAL_DECISION_PHRASES)) {
+            return true;
+        }
+        for (String decisionPrefix : GENERIC_DECISION_PREFIXES) {
+            String normalizedDecisionPrefix = normalizeForMatch(decisionPrefix);
+            if (normalized.contains(normalizedDecisionPrefix)
+                    && (containsAnyNormalized(normalized, SPECIALIZED_MEDICAL_FACILITY_PHRASES)
+                    || containsAnyNormalized(normalized, HOSPITAL_TARGET_WORDS))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean containsMedicalFacility(String normalized) {
+        return containsAnyNormalized(normalized, HOSPITAL_TARGET_WORDS)
+                || containsAnyNormalized(normalized, SPECIALIZED_MEDICAL_FACILITY_PHRASES);
+    }
+
+    private boolean containsNeurologySignal(String text) {
+        String normalized = normalizeForMatch(text);
+        return containsAnyNormalized(normalized, NEUROLOGY_SIGNAL_WORDS)
+                || containsPhraseExcludingSuffix(normalized, "中风", "险");
+    }
+
+    private boolean containsPhraseExcludingSuffix(String normalized, String phrase, String forbiddenFollowingChar) {
+        String normalizedPhrase = normalizeForMatch(phrase);
+        String normalizedForbiddenChar = normalizeForMatch(forbiddenFollowingChar);
+        if (normalizedPhrase.isBlank()) {
+            return false;
+        }
+        int index = normalized.indexOf(normalizedPhrase);
+        while (index >= 0) {
+            int suffixIndex = index + normalizedPhrase.length();
+            if (normalizedForbiddenChar.isBlank()
+                    || suffixIndex >= normalized.length()
+                    || !normalized.startsWith(normalizedForbiddenChar, suffixIndex)) {
+                return true;
+            }
+            index = normalized.indexOf(normalizedPhrase, index + 1);
+        }
+        return false;
+    }
+
+    private boolean hasNearbyFacilityMatch(String normalized, List<String> facilityPhrases) {
+        if (normalized.isBlank() || facilityPhrases == null || facilityPhrases.isEmpty()) {
+            return false;
+        }
+        for (String distanceWord : DISTANCE_SIGNAL_WORDS) {
+            String normalizedDistanceWord = normalizeForMatch(distanceWord);
+            if (normalizedDistanceWord.isBlank()) {
+                continue;
+            }
+            int distanceIndex = normalized.indexOf(normalizedDistanceWord);
+            while (distanceIndex >= 0) {
+                int searchStart = distanceIndex + normalizedDistanceWord.length();
+                for (String facilityPhrase : facilityPhrases) {
+                    String normalizedFacilityPhrase = normalizeForMatch(facilityPhrase);
+                    if (normalizedFacilityPhrase.isBlank()) {
+                        continue;
+                    }
+                    int facilityIndex = normalized.indexOf(normalizedFacilityPhrase, searchStart);
+                    if (facilityIndex < 0) {
+                        continue;
+                    }
+                    int gapChars = facilityIndex - searchStart;
+                    if (gapChars >= 0 && gapChars <= MAX_NEARBY_FACILITY_GAP_CHARS) {
+                        return true;
+                    }
+                }
+                distanceIndex = normalized.indexOf(normalizedDistanceWord, distanceIndex + 1);
+            }
+        }
+        return false;
+    }
+
     private String normalizeForMatch(String value) {
         if (value == null || value.isBlank()) {
             return "";
         }
-        return value.trim().toLowerCase(Locale.ROOT);
+        String lowerCased = value.trim().toLowerCase(Locale.ROOT);
+        StringBuilder normalized = new StringBuilder(lowerCased.length());
+        for (int index = 0; index < lowerCased.length(); index++) {
+            char character = lowerCased.charAt(index);
+            if (Character.isLetterOrDigit(character)) {
+                normalized.append(character);
+            }
+        }
+        return normalized.toString();
     }
 
     private String defaultKeyword() {

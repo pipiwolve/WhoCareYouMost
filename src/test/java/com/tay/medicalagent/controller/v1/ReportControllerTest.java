@@ -16,19 +16,22 @@ import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
-import java.util.List;
 import java.time.Instant;
+import java.util.List;
 
 import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.startsWith;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-import static org.mockito.Mockito.when;
 
 @WebMvcTest(ReportController.class)
 @Import({ControllerTestConfig.class, GlobalExceptionHandler.class})
@@ -86,7 +89,7 @@ class ReportControllerTest {
 
         mockMvc.perform(get("/v1/reports/{sessionId}", consultationSession.sessionId()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.message").value("success"))
+                .andExpect(jsonPath("$.message").value("OK"))
                 .andExpect(jsonPath("$.data.ready").value(false))
                 .andExpect(jsonPath("$.data.reason").value("当前会话暂无足够问诊内容"))
                 .andExpect(jsonPath("$.data.report").value(nullValue()));
@@ -128,9 +131,9 @@ class ReportControllerTest {
 
         mockMvc.perform(get("/v1/reports/{sessionId}", consultationSession.sessionId()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.message").value("success"))
+                .andExpect(jsonPath("$.message").value("OK"))
                 .andExpect(jsonPath("$.data.ready").value(true))
-                .andExpect(jsonPath("$.data.reason").value("报告生成完毕"))
+                .andExpect(jsonPath("$.data.reason").value(""))
                 .andExpect(jsonPath("$.data.report.title").value("thread_report_2的医疗诊断报告"))
                 .andExpect(jsonPath("$.data.report.riskLevel").value("中风险"))
                 .andExpect(jsonPath("$.data.report.basis[0]").value("发热"))
@@ -209,23 +212,27 @@ class ReportControllerTest {
                                 "attachment; filename=\"pdf\"; filename*=UTF-8''%E5%BC%A0%E4%B8%89%E7%9A%84%E5%8C%BB%E7%96%97%E8%AF%8A%E6%96%AD%E6%8A%A5%E5%91%8A.pdf"));
     }
 
-                @Test
-                void updateLocationShouldPersistCoordinatesWhenConsentGranted() throws Exception {
-                                ConsultationSession consultationSession = consultationSessionService.createSession("usr_loc_1", "thread_loc_1");
+    @Test
+    void updateLocationShouldPersistCoordinatesWhenConsentGranted() throws Exception {
+        ConsultationSession consultationSession = consultationSessionService.createSession("usr_loc_1", "thread_loc_1");
 
-                                mockMvc.perform(post("/v1/reports/{sessionId}/location", consultationSession.sessionId())
-                                                                                                .contentType("application/json")
-                                                                                                .content("""
-                                                                                                                                {
-                                                                                                                                        "latitude": 31.23,
-                                                                                                                                        "longitude": 121.47,
-                                                                                                                                        "consentGranted": true
-                                                                                                                            }
-                                                                """))
-                                                                .andExpect(status().isOk())
-                                                                .andExpect(jsonPath("$.code").value(200))
-                                                                .andExpect(jsonPath("$.message").value("success"));
+        mockMvc.perform(post("/v1/reports/{sessionId}/location", consultationSession.sessionId())
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "latitude": 31.23,
+                                  "longitude": 121.47,
+                                  "consentGranted": true
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.message").value("OK"));
 
-                org.mockito.Mockito.verify(medicalApp).invalidateReportSnapshot(consultationSession.sessionId());
-                }
+        ConsultationSession updatedSession = consultationSessionService.getRequiredSession(consultationSession.sessionId());
+        assertEquals(31.23, updatedSession.latitude());
+        assertEquals(121.47, updatedSession.longitude());
+        assertNotNull(updatedSession.locationAuthorizedAt());
+        verifyNoInteractions(medicalApp);
+    }
 }

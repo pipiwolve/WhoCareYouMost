@@ -34,3 +34,7 @@ build/
 
 ### Local runtimes ###
 .venv/
+tmp/
+*.log
+*.pid
+target/verification-logs/

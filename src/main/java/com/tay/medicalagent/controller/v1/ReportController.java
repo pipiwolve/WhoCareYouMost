@@ -85,7 +85,6 @@ public class ReportController {
             request.longitude(),
             Boolean.TRUE.equals(request.consentGranted())
         );
-        medicalApp.invalidateReportSnapshot(sessionId);
         log.info(
                 "Report location updated. sessionId={}, latitude={}, longitude={}",
                 sessionId,

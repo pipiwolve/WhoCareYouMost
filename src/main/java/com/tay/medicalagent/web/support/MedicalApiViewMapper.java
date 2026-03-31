@@ -27,7 +27,6 @@ import java.util.List;
 public class MedicalApiViewMapper {
 
     private static final String DEFAULT_REPORT_UNAVAILABLE_REASON = "当前会话暂无足够问诊内容";
-    private static final String REPORT_READY_REASON = "报告生成完毕";
     private static final String DEFAULT_DISCLAIMER = MedicalPrompts.DEFAULT_REPORT_DISCLAIMER;
     private static final String DEFAULT_ROUTE_UNAVAILABLE_MESSAGE = "路线服务暂不可用";
 
@@ -42,10 +41,7 @@ public class MedicalApiViewMapper {
     ) {
         ReportViewDto generatedReport = medicalChatResult.report() == null
                 ? null
-                : toReportView(
-                        medicalChatResult.report(),
-                        reportPreviewSnapshot == null ? MedicalHospitalPlanningSummary.empty() : reportPreviewSnapshot.planningSummary()
-                );
+                : toReportView(medicalChatResult.report(), MedicalHospitalPlanningSummary.empty());
         return new ChatCompletionResponse(
                 sessionId,
                 safeText(medicalChatResult.reply()),
@@ -82,7 +78,7 @@ public class MedicalApiViewMapper {
             return new ReportQueryResponse(false, reason, null);
         }
 
-        return new ReportQueryResponse(true, REPORT_READY_REASON, toReportView(medicalDiagnosisReport, planningSummary));
+        return new ReportQueryResponse(true, "", toReportView(medicalDiagnosisReport, planningSummary));
     }
 
     public ReportViewDto toReportViewNullable(MedicalDiagnosisReport medicalDiagnosisReport) {

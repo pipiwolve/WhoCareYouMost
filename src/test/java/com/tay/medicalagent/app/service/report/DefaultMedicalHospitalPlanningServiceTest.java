@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -17,9 +18,56 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class DefaultMedicalHospitalPlanningServiceTest {
 
     @Test
+    void shouldUseDeterministicMcpByDefaultWithoutInvokingAgenticPlanner() {
+        MedicalReportPlanningProperties properties = defaultProperties();
+        AtomicInteger agentInvocations = new AtomicInteger();
+
+        MedicalHospitalPlanningSummary deterministicSummary = new MedicalHospitalPlanningSummary(
+                List.of(new MedicalHospitalRecommendation(
+                        "默认MCP医院",
+                        "默认地址",
+                        true,
+                        1500,
+                        List.of(new MedicalHospitalRouteOption(
+                                "WALK",
+                                1500,
+                                20,
+                                "步行方案",
+                                List.of("步行200米到达医院")
+                        ))
+                )),
+                true,
+                "",
+                "ok"
+        );
+
+        MedicalHospitalPlanningAgent planningAgent = (latitude, longitude, report, planningIntent, mcpProperties) -> {
+            agentInvocations.incrementAndGet();
+            return Optional.of(deterministicSummary);
+        };
+        MedicalHospitalPlanningGateway gateway = (latitude, longitude, planningIntent, mcpProperties) -> Optional.of(deterministicSummary);
+        MedicalPlanningIntentResolver resolver = new DefaultMedicalPlanningIntentResolver(properties);
+
+        DefaultMedicalHospitalPlanningService service = new DefaultMedicalHospitalPlanningService(
+                properties,
+                planningAgent,
+                gateway,
+                resolver
+        );
+
+        MedicalHospitalPlanningSummary result = service.plan(31.2, 121.4, exportableReport());
+
+        assertEquals(MedicalReportPlanningProperties.PlanningMode.MCP, properties.getResolvedMode());
+        assertEquals(0, agentInvocations.get());
+        assertEquals("ok", result.routeStatusCode());
+        assertTrue(result.routesAvailable());
+        assertEquals("默认MCP医院", result.hospitals().get(0).name());
+    }
+
+    @Test
     void shouldUseAgenticMcpResultWhenEnabledAndAgentReturnsData() {
         MedicalReportPlanningProperties properties = defaultProperties();
-        properties.setMcpEnabled(true);
+        properties.setMode("agentic");
 
         MedicalHospitalPlanningSummary mcpSummary = new MedicalHospitalPlanningSummary(
                 List.of(new MedicalHospitalRecommendation(
@@ -56,7 +104,7 @@ class DefaultMedicalHospitalPlanningServiceTest {
     @Test
     void shouldFallbackWithoutRoutesWhenMcpEnabledButGatewayUnavailable() {
         MedicalReportPlanningProperties properties = defaultProperties();
-        properties.setMcpEnabled(true);
+        properties.setMode("mcp");
 
         MedicalHospitalPlanningAgent planningAgent = (latitude, longitude, report, planningIntent, mcpProperties) -> Optional.empty();
         MedicalHospitalPlanningGateway gateway = (latitude, longitude, planningIntent, mcpProperties) -> Optional.empty();
@@ -80,7 +128,7 @@ class DefaultMedicalHospitalPlanningServiceTest {
     @Test
     void shouldFallbackToDeterministicMcpWhenAgentReturnsLocationMissingWithHospitals() {
         MedicalReportPlanningProperties properties = defaultProperties();
-        properties.setMcpEnabled(true);
+        properties.setMode("agentic");
 
         MedicalHospitalPlanningSummary invalidAgentSummary = new MedicalHospitalPlanningSummary(
                 List.of(
@@ -126,7 +174,7 @@ class DefaultMedicalHospitalPlanningServiceTest {
     @Test
     void shouldFallbackToDeterministicMcpWhenAgentReturnsHospitalsWithoutRoutes() {
         MedicalReportPlanningProperties properties = defaultProperties();
-        properties.setMcpEnabled(true);
+        properties.setMode("agentic");
 
         MedicalHospitalPlanningSummary weakAgentSummary = new MedicalHospitalPlanningSummary(
                 List.of(
@@ -172,7 +220,7 @@ class DefaultMedicalHospitalPlanningServiceTest {
     @Test
     void shouldFallbackToDeterministicMcpWhenAgentReturnsRoutesWithoutSteps() {
         MedicalReportPlanningProperties properties = defaultProperties();
-        properties.setMcpEnabled(true);
+        properties.setMode("agentic");
 
         MedicalHospitalPlanningSummary weakAgentSummary = new MedicalHospitalPlanningSummary(
                 List.of(new MedicalHospitalRecommendation(
@@ -222,6 +270,50 @@ class DefaultMedicalHospitalPlanningServiceTest {
         assertTrue(result.routesAvailable());
         assertEquals("真实医院", result.hospitals().get(0).name());
         assertEquals(List.of("沿内环高架路行驶", "到达真实医院"), result.hospitals().get(0).routes().get(0).steps());
+    }
+
+    @Test
+    void shouldFallbackToLocalWhenAgenticAndDeterministicMcpBothReturnEmpty() {
+        MedicalReportPlanningProperties properties = defaultProperties();
+        properties.setMode("agentic");
+
+        MedicalHospitalPlanningAgent planningAgent = (latitude, longitude, report, planningIntent, mcpProperties) -> Optional.empty();
+        MedicalHospitalPlanningGateway gateway = (latitude, longitude, planningIntent, mcpProperties) -> Optional.empty();
+        MedicalPlanningIntentResolver resolver = new DefaultMedicalPlanningIntentResolver(properties);
+
+        DefaultMedicalHospitalPlanningService service = new DefaultMedicalHospitalPlanningService(
+                properties,
+                planningAgent,
+                gateway,
+                resolver
+        );
+
+        MedicalHospitalPlanningSummary result = service.plan(31.2, 121.4, exportableReport());
+
+        assertFalse(result.routesAvailable());
+        assertEquals("mcp_unavailable", result.routeStatusCode());
+        assertFalse(result.hospitals().isEmpty());
+    }
+
+    @Test
+    void shouldReturnLocalHospitalsWithoutRoutesWhenModeIsLocal() {
+        MedicalReportPlanningProperties properties = defaultProperties();
+        properties.setMode("local");
+
+        DefaultMedicalHospitalPlanningService service = new DefaultMedicalHospitalPlanningService(
+                properties,
+                (latitude, longitude, report, planningIntent, mcpProperties) -> Optional.empty(),
+                (latitude, longitude, planningIntent, mcpProperties) -> Optional.empty(),
+                new DefaultMedicalPlanningIntentResolver(properties)
+        );
+
+        MedicalHospitalPlanningSummary result = service.plan(31.2, 121.4, exportableReport());
+
+        assertFalse(result.routesAvailable());
+        assertEquals("route_disabled", result.routeStatusCode());
+        assertEquals("路线能力未启用", result.routeStatusMessage());
+        assertFalse(result.hospitals().isEmpty());
+        assertTrue(result.hospitals().stream().allMatch(hospital -> hospital.routes().isEmpty()));
     }
 
     private MedicalReportPlanningProperties defaultProperties() {

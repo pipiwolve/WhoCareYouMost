@@ -9,6 +9,7 @@ import com.tay.medicalagent.app.rag.store.MedicalRagContextHolder;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
 import com.tay.medicalagent.app.prompt.MedicalPrompts;
 import com.tay.medicalagent.app.service.profile.UserProfileService;
+import com.tay.medicalagent.app.service.report.MedicalPlanningIntentResolver;
 import com.tay.medicalagent.app.service.report.MedicalReportService;
 import com.tay.medicalagent.app.service.report.MedicalReportTriggerPolicy;
 import com.tay.medicalagent.app.service.report.ReportTriggerDecision;
@@ -31,6 +32,7 @@ public class DefaultMedicalChatService implements MedicalChatService {
 
     private static final String REPORT_REQUEST_REPLY = "已根据当前线程对话生成医疗诊断报告。";
     private static final String NO_REPORT_CONTEXT_REPLY = "当前线程暂无足够对话内容，无法生成诊断报告。";
+    private static final String EXPLICIT_HOSPITAL_ROUTE_ACTION_TEXT = "已按您的请求准备附近医院路线，可查看详情。";
 
     private final MedicalAgentRuntime medicalAgentRuntime;
     private final ThreadConversationService threadConversationService;
@@ -39,6 +41,7 @@ public class DefaultMedicalChatService implements MedicalChatService {
     private final UserProfileService userProfileService;
     private final MedicalRagContextHolder medicalRagContextHolder;
     private final MedicalReplyFormatter medicalReplyFormatter;
+    private final MedicalPlanningIntentResolver medicalPlanningIntentResolver;
 
     public DefaultMedicalChatService(
             MedicalAgentRuntime medicalAgentRuntime,
@@ -47,7 +50,8 @@ public class DefaultMedicalChatService implements MedicalChatService {
             MedicalReportTriggerPolicy medicalReportTriggerPolicy,
             UserProfileService userProfileService,
             MedicalRagContextHolder medicalRagContextHolder,
-            MedicalReplyFormatter medicalReplyFormatter
+            MedicalReplyFormatter medicalReplyFormatter,
+            MedicalPlanningIntentResolver medicalPlanningIntentResolver
     ) {
         this.medicalAgentRuntime = medicalAgentRuntime;
         this.threadConversationService = threadConversationService;
@@ -56,6 +60,7 @@ public class DefaultMedicalChatService implements MedicalChatService {
         this.userProfileService = userProfileService;
         this.medicalRagContextHolder = medicalRagContextHolder;
         this.medicalReplyFormatter = medicalReplyFormatter;
+        this.medicalPlanningIntentResolver = medicalPlanningIntentResolver;
     }
 
     @Override
@@ -83,14 +88,17 @@ public class DefaultMedicalChatService implements MedicalChatService {
                 normalizedReply.reply(),
                 conversation
         );
+        ReportTriggerDecision effectiveTriggerDecision = medicalPlanningIntentResolver.isExplicitHospitalRequest(prompt)
+                ? new ReportTriggerDecision(ReportTriggerLevel.RECOMMENDED, EXPLICIT_HOSPITAL_ROUTE_ACTION_TEXT)
+                : triggerDecision;
         return new MedicalChatResult(
                 effectiveThreadId,
                 effectiveUserId,
                 normalizedReply.reply(),
-                triggerDecision.reportAvailable(),
-                triggerDecision.reportReason(),
-                triggerDecision.level(),
-                triggerDecision.actionText(),
+                effectiveTriggerDecision.reportAvailable(),
+                effectiveTriggerDecision.reportReason(),
+                effectiveTriggerDecision.level(),
+                effectiveTriggerDecision.actionText(),
                 false,
                 null,
                 ragContext.applied(),

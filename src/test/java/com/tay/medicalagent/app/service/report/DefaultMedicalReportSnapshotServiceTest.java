@@ -7,9 +7,16 @@ import com.tay.medicalagent.app.service.chat.ThreadConversationService;
 import com.tay.medicalagent.app.service.profile.UserProfileService;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -19,7 +26,7 @@ class DefaultMedicalReportSnapshotServiceTest {
 
     @Test
     void shouldReuseFreshSnapshotWithoutRebuildingReportAndPlanning() {
-        MedicalReportSnapshotRepository repository = new InMemoryMedicalReportSnapshotRepository();
+        MedicalReportSnapshotRepository repository = new InMemoryMedicalReportSnapshotRepository(snapshotProperties());
         MedicalReportService reportService = mock(MedicalReportService.class);
         MedicalHospitalPlanningService planningService = mock(MedicalHospitalPlanningService.class);
         ThreadConversationService threadConversationService = mock(ThreadConversationService.class);
@@ -53,7 +60,9 @@ class DefaultMedicalReportSnapshotServiceTest {
                 planningService,
                 threadConversationService,
                 userProfileService,
-                planningIntentResolver
+                planningIntentResolver,
+                snapshotProperties(),
+                Clock.systemUTC()
         );
 
         var first = service.getOrCreateSnapshot("sess_snapshot", "thread_snapshot", "usr_snapshot", 31.2, 121.4);
@@ -65,8 +74,59 @@ class DefaultMedicalReportSnapshotServiceTest {
     }
 
     @Test
+    void shouldReuseExistingReportWhenOnlyLocationChanges() {
+        MedicalReportSnapshotRepository repository = new InMemoryMedicalReportSnapshotRepository(snapshotProperties());
+        MedicalReportService reportService = mock(MedicalReportService.class);
+        MedicalHospitalPlanningService planningService = mock(MedicalHospitalPlanningService.class);
+        ThreadConversationService threadConversationService = mock(ThreadConversationService.class);
+        UserProfileService userProfileService = mock(UserProfileService.class);
+        MedicalPlanningIntentResolver planningIntentResolver = mock(MedicalPlanningIntentResolver.class);
+
+        MedicalDiagnosisReport report = exportableReport();
+        MedicalPlanningIntent planningIntent = new MedicalPlanningIntent(
+                true,
+                false,
+                "trigger",
+                "default",
+                "医院",
+                "090100|090101",
+                5000,
+                3,
+                false
+        );
+
+        when(threadConversationService.getThreadConversation("thread_snapshot")).thenReturn(List.of());
+        when(threadConversationService.buildConversationTranscript(List.of())).thenReturn("user:胸痛\nassistant:建议尽快就医");
+        when(userProfileService.buildProfileContext("usr_snapshot")).thenReturn("姓名：测试用户");
+        when(reportService.generateReportFromThread("thread_snapshot", "usr_snapshot")).thenReturn(report);
+        when(planningIntentResolver.resolve(report)).thenReturn(planningIntent);
+        when(planningService.plan(31.2, 121.4, report, planningIntent))
+                .thenReturn(new MedicalHospitalPlanningSummary(List.of(), false, "location_missing", "location_missing"));
+        when(planningService.plan(31.23, 121.47, report, planningIntent))
+                .thenReturn(MedicalHospitalPlanningSummary.empty());
+
+        DefaultMedicalReportSnapshotService service = new DefaultMedicalReportSnapshotService(
+                repository,
+                reportService,
+                planningService,
+                threadConversationService,
+                userProfileService,
+                planningIntentResolver,
+                snapshotProperties(),
+                Clock.systemUTC()
+        );
+
+        service.getOrCreateSnapshot("sess_snapshot", "thread_snapshot", "usr_snapshot", 31.2, 121.4);
+        service.getOrCreateSnapshot("sess_snapshot", "thread_snapshot", "usr_snapshot", 31.23, 121.47);
+
+        verify(reportService, times(1)).generateReportFromThread("thread_snapshot", "usr_snapshot");
+        verify(planningService, times(1)).plan(31.2, 121.4, report, planningIntent);
+        verify(planningService, times(1)).plan(31.23, 121.47, report, planningIntent);
+    }
+
+    @Test
     void shouldRebuildSnapshotWhenConversationFingerprintChanges() {
-        MedicalReportSnapshotRepository repository = new InMemoryMedicalReportSnapshotRepository();
+        MedicalReportSnapshotRepository repository = new InMemoryMedicalReportSnapshotRepository(snapshotProperties());
         MedicalReportService reportService = mock(MedicalReportService.class);
         MedicalHospitalPlanningService planningService = mock(MedicalHospitalPlanningService.class);
         ThreadConversationService threadConversationService = mock(ThreadConversationService.class);
@@ -102,7 +162,9 @@ class DefaultMedicalReportSnapshotServiceTest {
                 planningService,
                 threadConversationService,
                 userProfileService,
-                planningIntentResolver
+                planningIntentResolver,
+                snapshotProperties(),
+                Clock.systemUTC()
         );
 
         service.getOrCreateSnapshot("sess_snapshot", "thread_snapshot", "usr_snapshot", 31.2, 121.4);
@@ -110,6 +172,210 @@ class DefaultMedicalReportSnapshotServiceTest {
 
         verify(reportService, times(2)).generateReportFromThread("thread_snapshot", "usr_snapshot");
         verify(planningService, times(2)).plan(31.2, 121.4, report, planningIntent);
+    }
+
+    @Test
+    void shouldRetryOnlyPlanningWhenFreshSnapshotIsDegradedAfterRetryWindow() {
+        MedicalReportSnapshotRepository repository = new InMemoryMedicalReportSnapshotRepository(snapshotProperties());
+        MedicalReportService reportService = mock(MedicalReportService.class);
+        MedicalHospitalPlanningService planningService = mock(MedicalHospitalPlanningService.class);
+        ThreadConversationService threadConversationService = mock(ThreadConversationService.class);
+        UserProfileService userProfileService = mock(UserProfileService.class);
+        MedicalPlanningIntentResolver planningIntentResolver = mock(MedicalPlanningIntentResolver.class);
+
+        MedicalDiagnosisReport report = exportableReport();
+        MedicalPlanningIntent planningIntent = new MedicalPlanningIntent(
+                true,
+                false,
+                "trigger",
+                "default",
+                "医院",
+                "090100|090101",
+                5000,
+                3,
+                false
+        );
+
+        MutableClock clock = new MutableClock(Instant.parse("2026-03-31T00:00:00Z"));
+        MedicalReportSnapshotProperties snapshotProperties = snapshotProperties();
+        snapshotProperties.setDegradedPlanningRetryAfter(Duration.ofSeconds(30));
+
+        when(threadConversationService.getThreadConversation("thread_snapshot")).thenReturn(List.of());
+        when(threadConversationService.buildConversationTranscript(List.of())).thenReturn("user:胸痛\nassistant:建议尽快就医");
+        when(userProfileService.buildProfileContext("usr_snapshot")).thenReturn("姓名：测试用户");
+        when(reportService.generateReportFromThread("thread_snapshot", "usr_snapshot")).thenReturn(report);
+        when(planningIntentResolver.resolve(report)).thenReturn(planningIntent);
+        when(planningService.plan(31.2, 121.4, report, planningIntent))
+                .thenReturn(new MedicalHospitalPlanningSummary(List.of(), false, "MCP 路线服务暂不可用", "mcp_unavailable"))
+                .thenReturn(new MedicalHospitalPlanningSummary(List.of(), false, "路线查询超时", "route_timeout"));
+
+        DefaultMedicalReportSnapshotService service = new DefaultMedicalReportSnapshotService(
+                repository,
+                reportService,
+                planningService,
+                threadConversationService,
+                userProfileService,
+                planningIntentResolver,
+                snapshotProperties,
+                clock
+        );
+
+        var first = service.getOrCreateSnapshot("sess_snapshot", "thread_snapshot", "usr_snapshot", 31.2, 121.4);
+        clock.plus(Duration.ofSeconds(31));
+        var second = service.getOrCreateSnapshot("sess_snapshot", "thread_snapshot", "usr_snapshot", 31.2, 121.4);
+
+        assertEquals("mcp_unavailable", first.planningSummary().routeStatusCode());
+        assertEquals("route_timeout", second.planningSummary().routeStatusCode());
+        assertNotSame(first, second);
+        verify(reportService, times(1)).generateReportFromThread("thread_snapshot", "usr_snapshot");
+        verify(planningService, times(2)).plan(31.2, 121.4, report, planningIntent);
+    }
+
+    @Test
+    void shouldNotRetryPlanningForNonRetryableDegradedStatuses() {
+        MedicalReportSnapshotRepository repository = new InMemoryMedicalReportSnapshotRepository(snapshotProperties());
+        MedicalReportService reportService = mock(MedicalReportService.class);
+        MedicalHospitalPlanningService planningService = mock(MedicalHospitalPlanningService.class);
+        ThreadConversationService threadConversationService = mock(ThreadConversationService.class);
+        UserProfileService userProfileService = mock(UserProfileService.class);
+        MedicalPlanningIntentResolver planningIntentResolver = mock(MedicalPlanningIntentResolver.class);
+
+        MedicalDiagnosisReport report = exportableReport();
+        MedicalPlanningIntent planningIntent = new MedicalPlanningIntent(
+                true,
+                false,
+                "trigger",
+                "default",
+                "医院",
+                "090100|090101",
+                5000,
+                3,
+                false
+        );
+
+        MutableClock clock = new MutableClock(Instant.parse("2026-03-31T00:00:00Z"));
+        MedicalReportSnapshotProperties snapshotProperties = snapshotProperties();
+        snapshotProperties.setDegradedPlanningRetryAfter(Duration.ofSeconds(30));
+
+        when(threadConversationService.getThreadConversation("thread_snapshot")).thenReturn(List.of());
+        when(threadConversationService.buildConversationTranscript(List.of())).thenReturn("user:胸痛\nassistant:建议尽快就医");
+        when(userProfileService.buildProfileContext("usr_snapshot")).thenReturn("姓名：测试用户");
+        when(reportService.generateReportFromThread("thread_snapshot", "usr_snapshot")).thenReturn(report);
+        when(planningIntentResolver.resolve(report)).thenReturn(planningIntent);
+        when(planningService.plan(31.2, 121.4, report, planningIntent))
+                .thenReturn(new MedicalHospitalPlanningSummary(List.of(), false, "未上传经纬度", "location_missing"));
+
+        DefaultMedicalReportSnapshotService service = new DefaultMedicalReportSnapshotService(
+                repository,
+                reportService,
+                planningService,
+                threadConversationService,
+                userProfileService,
+                planningIntentResolver,
+                snapshotProperties,
+                clock
+        );
+
+        var first = service.getOrCreateSnapshot("sess_snapshot", "thread_snapshot", "usr_snapshot", 31.2, 121.4);
+        clock.plus(Duration.ofSeconds(31));
+        var second = service.getOrCreateSnapshot("sess_snapshot", "thread_snapshot", "usr_snapshot", 31.2, 121.4);
+
+        assertSame(first, second);
+        assertEquals("location_missing", second.planningSummary().routeStatusCode());
+        verify(reportService, times(1)).generateReportFromThread("thread_snapshot", "usr_snapshot");
+        verify(planningService, times(1)).plan(31.2, 121.4, report, planningIntent);
+    }
+
+    @Test
+    void shouldCleanupStaleLocksAfterCleanupWindow() {
+        MedicalReportSnapshotRepository repository = new InMemoryMedicalReportSnapshotRepository(snapshotProperties());
+        MedicalReportService reportService = mock(MedicalReportService.class);
+        MedicalHospitalPlanningService planningService = mock(MedicalHospitalPlanningService.class);
+        ThreadConversationService threadConversationService = mock(ThreadConversationService.class);
+        UserProfileService userProfileService = mock(UserProfileService.class);
+        MedicalPlanningIntentResolver planningIntentResolver = mock(MedicalPlanningIntentResolver.class);
+
+        MedicalDiagnosisReport report = exportableReport();
+        MedicalPlanningIntent planningIntent = new MedicalPlanningIntent(
+                true,
+                false,
+                "trigger",
+                "default",
+                "医院",
+                "090100|090101",
+                5000,
+                3,
+                false
+        );
+
+        MutableClock clock = new MutableClock(Instant.parse("2026-03-31T00:00:00Z"));
+        MedicalReportSnapshotProperties snapshotProperties = snapshotProperties();
+        snapshotProperties.setCleanupInterval(Duration.ofSeconds(1));
+        snapshotProperties.setStaleLockTtl(Duration.ofSeconds(1));
+
+        when(threadConversationService.getThreadConversation("thread_snapshot")).thenReturn(List.of());
+        when(threadConversationService.buildConversationTranscript(List.of())).thenReturn("user:胸痛");
+        when(userProfileService.buildProfileContext("usr_snapshot")).thenReturn("姓名：测试用户");
+        when(reportService.generateReportFromThread("thread_snapshot", "usr_snapshot")).thenReturn(report);
+        when(planningIntentResolver.resolve(report)).thenReturn(planningIntent);
+        when(planningService.plan(31.2, 121.4, report, planningIntent)).thenReturn(MedicalHospitalPlanningSummary.empty());
+
+        DefaultMedicalReportSnapshotService service = new DefaultMedicalReportSnapshotService(
+                repository,
+                reportService,
+                planningService,
+                threadConversationService,
+                userProfileService,
+                planningIntentResolver,
+                snapshotProperties,
+                clock
+        );
+
+        service.getOrCreateSnapshot("sess_snapshot", "thread_snapshot", "usr_snapshot", 31.2, 121.4);
+        assertTrue(service.snapshotLockCount() >= 1);
+
+        clock.plus(Duration.ofSeconds(2));
+        service.cleanupStaleLocksForTesting();
+
+        assertEquals(0, service.snapshotLockCount());
+    }
+
+    private MedicalReportSnapshotProperties snapshotProperties() {
+        MedicalReportSnapshotProperties properties = new MedicalReportSnapshotProperties();
+        properties.setTtl(Duration.ofMinutes(30));
+        properties.setCleanupInterval(Duration.ofMinutes(5));
+        properties.setStaleLockTtl(Duration.ofSeconds(60));
+        properties.setDegradedPlanningRetryAfter(Duration.ofSeconds(30));
+        properties.setMaxSessions(500);
+        return properties;
+    }
+
+    private static final class MutableClock extends Clock {
+
+        private Instant instant;
+
+        private MutableClock(Instant instant) {
+            this.instant = instant;
+        }
+
+        @Override
+        public ZoneOffset getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(java.time.ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return instant;
+        }
+
+        private void plus(Duration duration) {
+            instant = instant.plus(duration);
+        }
     }
 
     private MedicalDiagnosisReport exportableReport() {

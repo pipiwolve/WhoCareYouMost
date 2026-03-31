@@ -12,6 +12,13 @@ public class MedicalReportPlanningProperties {
 
     private boolean enabled = true;
 
+    /**
+     * 规划运行模式：off|local|mcp|agentic。
+     */
+    private String mode = PlanningMode.MCP.name().toLowerCase();
+
+    private boolean modeConfigured;
+
     private int topK = 3;
 
     private boolean routePlanningEnabled = true;
@@ -19,12 +26,12 @@ public class MedicalReportPlanningProperties {
     /**
      * 是否启用 MCP 规划链路。
      */
-    private boolean mcpEnabled = false;
+    private Boolean mcpEnabled;
 
     /**
      * 是否启用 Agentic MCP 规划链路。
      */
-    private boolean agentEnabled = true;
+    private Boolean agentEnabled;
 
     private final Mcp mcp = new Mcp();
 
@@ -36,6 +43,28 @@ public class MedicalReportPlanningProperties {
 
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
+    }
+
+    public String getMode() {
+        return mode;
+    }
+
+    public void setMode(String mode) {
+        this.mode = mode;
+        this.modeConfigured = mode != null && !mode.isBlank();
+    }
+
+    public PlanningMode getResolvedMode() {
+        if (!enabled) {
+            return PlanningMode.OFF;
+        }
+        if (modeConfigured) {
+            return parseMode(mode);
+        }
+        if (mcpEnabled != null || agentEnabled != null) {
+            return resolveLegacyMode();
+        }
+        return parseMode(mode);
     }
 
     public int getTopK() {
@@ -55,7 +84,8 @@ public class MedicalReportPlanningProperties {
     }
 
     public boolean isMcpEnabled() {
-        return mcpEnabled;
+        PlanningMode resolvedMode = getResolvedMode();
+        return resolvedMode == PlanningMode.MCP || resolvedMode == PlanningMode.AGENTIC;
     }
 
     public void setMcpEnabled(boolean mcpEnabled) {
@@ -63,11 +93,42 @@ public class MedicalReportPlanningProperties {
     }
 
     public boolean isAgentEnabled() {
-        return agentEnabled;
+        return getResolvedMode() == PlanningMode.AGENTIC;
     }
 
     public void setAgentEnabled(boolean agentEnabled) {
         this.agentEnabled = agentEnabled;
+    }
+
+    public boolean usesDeprecatedFlags() {
+        return !modeConfigured && (mcpEnabled != null || agentEnabled != null);
+    }
+
+    private PlanningMode resolveLegacyMode() {
+        boolean effectiveMcpEnabled = Boolean.TRUE.equals(mcpEnabled);
+        boolean effectiveAgentEnabled = agentEnabled == null || agentEnabled;
+        if (!effectiveMcpEnabled && !effectiveAgentEnabled) {
+            return PlanningMode.OFF;
+        }
+        if (!effectiveMcpEnabled) {
+            return PlanningMode.LOCAL;
+        }
+        if (!effectiveAgentEnabled) {
+            return PlanningMode.MCP;
+        }
+        return PlanningMode.AGENTIC;
+    }
+
+    private PlanningMode parseMode(String candidate) {
+        if (candidate == null || candidate.isBlank()) {
+            return PlanningMode.OFF;
+        }
+        try {
+            return PlanningMode.valueOf(candidate.trim().toUpperCase());
+        }
+        catch (IllegalArgumentException ex) {
+            return PlanningMode.OFF;
+        }
     }
 
     public Mcp getMcp() {
@@ -195,5 +256,12 @@ public class MedicalReportPlanningProperties {
         public void setLongitude(double longitude) {
             this.longitude = longitude;
         }
+    }
+
+    public enum PlanningMode {
+        OFF,
+        LOCAL,
+        MCP,
+        AGENTIC
     }
 }

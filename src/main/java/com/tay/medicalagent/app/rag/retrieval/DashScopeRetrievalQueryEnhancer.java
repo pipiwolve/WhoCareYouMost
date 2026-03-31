@@ -139,7 +139,7 @@ public class DashScopeRetrievalQueryEnhancer implements RetrievalQueryEnhancer {
         }
 
         List<String> fragments = new ArrayList<>();
-        for (String fragment : text.split("[，。；,;!?！？]+")) {
+        for (String fragment : text.split("[，。；、,;!?！？]+")) {
             String normalizedFragment = normalizeQuery(fragment);
             if (!normalizedFragment.isBlank()) {
                 fragments.add(normalizedFragment);

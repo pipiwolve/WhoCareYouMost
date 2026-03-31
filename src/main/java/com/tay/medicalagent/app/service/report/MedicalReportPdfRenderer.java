@@ -192,18 +192,32 @@ public class MedicalReportPdfRenderer {
 
             for (MedicalHospitalRouteOption routeOption : hospital.routes()) {
                 Paragraph route = new Paragraph(
-                    "- " + routeModeLabel(routeOption.mode()) + "：约"
+                        "- " + routeModeLabel(routeOption.mode()) + "：约"
                                 + routeOption.distanceMeters() + "米，"
-                                + routeOption.durationMinutes() + "分钟",
+                                + routeOption.durationMinutes() + "分钟"
+                                + "；" + normalizeText(routeOption.summary()),
                         bodyFont
                 );
                 route.setIndentationLeft(16f);
                 route.setSpacingAfter(2f);
                 document.add(route);
+                addRouteSteps(document, routeOption.steps(), bodyFont);
             }
             Paragraph spacer = new Paragraph("", bodyFont);
             spacer.setSpacingAfter(4f);
             document.add(spacer);
+        }
+    }
+
+    private void addRouteSteps(Document document, List<String> steps, Font bodyFont) throws DocumentException {
+        if (steps == null || steps.isEmpty()) {
+            return;
+        }
+        for (String step : steps) {
+            Paragraph paragraph = new Paragraph("  * " + normalizeText(step), bodyFont);
+            paragraph.setIndentationLeft(28f);
+            paragraph.setSpacingAfter(2f);
+            document.add(paragraph);
         }
     }
 

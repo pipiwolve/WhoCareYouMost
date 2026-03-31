@@ -6,5 +6,4 @@ medical:
       strategy: vector
   report:
     planning:
-      mcp-enabled: false
-      agent-enabled: false
+      mode: local

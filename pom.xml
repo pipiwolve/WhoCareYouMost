@@ -105,9 +105,15 @@
         </dependency>
         <!-- 阿里云百炼sdk接入 -->
         <dependency>
-        <groupId>com.alibaba</groupId>
-        <artifactId>dashscope-sdk-java</artifactId>
-        <version>2.19.1</version>
+            <groupId>com.alibaba</groupId>
+            <artifactId>dashscope-sdk-java</artifactId>
+            <version>2.19.1</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-simple</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <!-- springAi ReactAgent依赖引入 -->
             <!-- Spring AI Alibaba Agent Framework -->
@@ -176,7 +182,81 @@
                     </excludes>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>**/*IT.java</exclude>
+                        <exclude>**/*LiveIT.java</exclude>
+                        <exclude>**/*IntegrationTest.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>local-it</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                                <configuration>
+                                    <includes>
+                                        <include>**/*IT.java</include>
+                                        <include>**/*IntegrationTest.java</include>
+                                    </includes>
+                                    <excludes>
+                                        <exclude>**/*LiveIT.java</exclude>
+                                    </excludes>
+                                    <failIfNoTests>true</failIfNoTests>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>live-it</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                                <configuration>
+                                    <includes>
+                                        <include>**/*LiveIT.java</include>
+                                    </includes>
+                                    <failIfNoTests>true</failIfNoTests>
+                                    <systemPropertyVariables>
+                                        <DASHSCOPE_API_KEY>${env.DASHSCOPE_API_KEY}</DASHSCOPE_API_KEY>
+                                        <AI_DASHSCOPE_API_KEY>${env.AI_DASHSCOPE_API_KEY}</AI_DASHSCOPE_API_KEY>
+                                        <amap.mcp.api-key>${env.AMAP_MAPS_API_KEY}</amap.mcp.api-key>
+                                        <amap.mcp.command>npx</amap.mcp.command>
+                                    </systemPropertyVariables>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
 </project>

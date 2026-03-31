@@ -12,6 +12,7 @@ import com.tay.medicalagent.app.service.chat.MedicalChatService;
 import com.tay.medicalagent.app.service.chat.ThreadConversationService;
 import com.tay.medicalagent.app.service.profile.UserProfileService;
 import com.tay.medicalagent.app.service.report.MedicalHospitalPlanningService;
+import com.tay.medicalagent.app.service.report.MedicalChatPreviewReportFactory;
 import com.tay.medicalagent.app.service.report.MedicalPlanningIntentResolver;
 import com.tay.medicalagent.app.service.report.MedicalReportPdfExportService;
 import com.tay.medicalagent.app.service.report.MedicalReportSnapshotService;
@@ -39,6 +40,7 @@ public class MedicalApp {
     private final MedicalHospitalPlanningService medicalHospitalPlanningService;
     private final MedicalReportSnapshotService medicalReportSnapshotService;
     private final MedicalPlanningIntentResolver medicalPlanningIntentResolver;
+    private final MedicalChatPreviewReportFactory medicalChatPreviewReportFactory;
 
     public MedicalApp(
             MedicalChatService medicalChatService,
@@ -48,7 +50,8 @@ public class MedicalApp {
             MedicalReportPdfExportService medicalReportPdfExportService,
             MedicalHospitalPlanningService medicalHospitalPlanningService,
             MedicalReportSnapshotService medicalReportSnapshotService,
-            MedicalPlanningIntentResolver medicalPlanningIntentResolver
+            MedicalPlanningIntentResolver medicalPlanningIntentResolver,
+            MedicalChatPreviewReportFactory medicalChatPreviewReportFactory
     ) {
         this.medicalChatService = medicalChatService;
         this.userProfileService = userProfileService;
@@ -58,6 +61,7 @@ public class MedicalApp {
         this.medicalHospitalPlanningService = medicalHospitalPlanningService;
         this.medicalReportSnapshotService = medicalReportSnapshotService;
         this.medicalPlanningIntentResolver = medicalPlanningIntentResolver;
+        this.medicalChatPreviewReportFactory = medicalChatPreviewReportFactory;
     }
 
     /**
@@ -266,11 +270,12 @@ public class MedicalApp {
             return Optional.empty();
         }
 
+        boolean explicitHospitalRequest = medicalPlanningIntentResolver.isExplicitHospitalRequest(prompt);
         MedicalDiagnosisReport report = medicalChatResult != null
                 && medicalChatResult.reportGenerated()
                 && medicalChatResult.report() != null
                 ? medicalChatResult.report()
-                : medicalChatService.generateReportFromThread(threadId, userId);
+                : resolvePreviewReport(threadId, userId, prompt, medicalChatResult, explicitHospitalRequest);
         if (report == null || !report.shouldGenerateReport()) {
             return Optional.empty();
         }
@@ -292,6 +297,10 @@ public class MedicalApp {
                 report,
                 planningIntent
         ));
+    }
+
+    public boolean isExplicitHospitalPlanningRequest(String prompt) {
+        return medicalPlanningIntentResolver.isExplicitHospitalRequest(prompt);
     }
 
     public void invalidateReportSnapshot(String sessionId) {
@@ -345,5 +354,18 @@ public class MedicalApp {
             return "unknown-session";
         }
         return sessionId.trim();
+    }
+
+    private MedicalDiagnosisReport resolvePreviewReport(
+            String threadId,
+            String userId,
+            String prompt,
+            MedicalChatResult medicalChatResult,
+            boolean explicitHospitalRequest
+    ) {
+        if (explicitHospitalRequest) {
+            return medicalChatPreviewReportFactory.build(threadId, userId, prompt, medicalChatResult);
+        }
+        return medicalChatService.generateReportFromThread(threadId, userId);
     }
 }

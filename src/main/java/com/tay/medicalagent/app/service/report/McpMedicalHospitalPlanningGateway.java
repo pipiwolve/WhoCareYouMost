@@ -14,9 +14,10 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -29,12 +30,14 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
 
     private static final Logger log = LoggerFactory.getLogger(McpMedicalHospitalPlanningGateway.class);
     private static final double EARTH_RADIUS_METERS = 6371000.0;
+    private static final long UNRESOLVED_DISTANCE_METERS = Long.MAX_VALUE;
     private static final String TOOL_MAPS_AROUND_SEARCH = "maps_around_search";
     private static final String TOOL_MAPS_WALKING_BY_COORDINATES = "maps_direction_walking_by_coordinates";
     private static final String TOOL_MAPS_DRIVING_BY_COORDINATES = "maps_direction_driving_by_coordinates";
     private static final String TOOL_MAPS_TRANSIT_BY_COORDINATES = "maps_direction_transit_integrated_by_coordinates";
     private static final String TOOL_MAPS_REGEOCODE = "maps_regeocode";
     private static final String TOOL_MAPS_SEARCH_DETAIL = "maps_search_detail";
+    private static final String TOOL_MAPS_TEXT_SEARCH = "maps_text_search";
 
     private final AmapMcpClientFactory amapMcpClientFactory;
     private final ObjectMapper objectMapper;
@@ -93,25 +96,27 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
                     tools.stream().map(McpSchema.Tool::name).toList()
             );
 
-            String nearbyTool = resolveToolName(tools, TOOL_MAPS_AROUND_SEARCH,
+            ToolDescriptor nearbyTool = resolveToolDescriptor(tools, TOOL_MAPS_AROUND_SEARCH,
                     List.of("around", "nearby", "search", "poi", "hospital", "医院"));
             if (nearbyTool == null) {
                 log.warn("MCP planning nearby tool not found. expected={}, serverName={}", TOOL_MAPS_AROUND_SEARCH, mcpProperties.getServerName());
                 return Optional.empty();
             }
 
-            String walkTool = resolveToolName(tools, TOOL_MAPS_WALKING_BY_COORDINATES, List.of("walking", "walk", "步行"));
-            String driveTool = resolveToolName(tools, TOOL_MAPS_DRIVING_BY_COORDINATES, List.of("driving", "drive", "驾车"));
-            String transitTool = resolveToolName(tools, TOOL_MAPS_TRANSIT_BY_COORDINATES, List.of("transit", "公交", "bus"));
-            String regeocodeTool = resolveToolName(tools, TOOL_MAPS_REGEOCODE, List.of("regeocode"));
-            String searchDetailTool = resolveToolName(tools, TOOL_MAPS_SEARCH_DETAIL, List.of("search_detail", "detail"));
+            ToolDescriptor walkTool = resolveToolDescriptor(tools, TOOL_MAPS_WALKING_BY_COORDINATES, List.of("walking", "walk", "步行"));
+            ToolDescriptor driveTool = resolveToolDescriptor(tools, TOOL_MAPS_DRIVING_BY_COORDINATES, List.of("driving", "drive", "驾车"));
+            ToolDescriptor transitTool = resolveToolDescriptor(tools, TOOL_MAPS_TRANSIT_BY_COORDINATES, List.of("transit", "公交", "bus"));
+            ToolDescriptor regeocodeTool = resolveToolDescriptor(tools, TOOL_MAPS_REGEOCODE, List.of("regeocode"));
+            ToolDescriptor searchDetailTool = resolveToolDescriptor(tools, TOOL_MAPS_SEARCH_DETAIL, List.of("search_detail", "detail"));
+            ToolDescriptor textSearchTool = resolveToolDescriptor(tools, TOOL_MAPS_TEXT_SEARCH, List.of("text_search", "text", "keyword"));
             log.info(
-                    "MCP planning tools resolved. walkTool={}, driveTool={}, transitTool={}, regeocodeTool={}, searchDetailTool={}",
-                    walkTool,
-                    driveTool,
-                    transitTool,
-                    regeocodeTool,
-                    searchDetailTool
+                    "MCP planning tools resolved. walkTool={}, driveTool={}, transitTool={}, regeocodeTool={}, searchDetailTool={}, textSearchTool={}",
+                    toolName(walkTool),
+                    toolName(driveTool),
+                    toolName(transitTool),
+                    toolName(regeocodeTool),
+                    toolName(searchDetailTool),
+                    toolName(textSearchTool)
             );
 
             NearbySearchOutcome nearbySearchOutcome = searchHospitalsWithFallbackPlans(
@@ -121,13 +126,33 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
                     longitude,
                     planningIntent,
                     mcpProperties,
-                    searchDetailTool
+                    searchDetailTool,
+                    textSearchTool,
+                    regeocodeTool
             );
+            if (nearbySearchOutcome.shouldFallbackToLocal()) {
+                log.warn(
+                        "MCP planning nearby search terminated early. tool={}, errorCategory={}, attempts={}",
+                        toolName(nearbyTool),
+                        nearbySearchOutcome.terminalErrorCategory(),
+                        nearbySearchOutcome.attemptSummaries()
+                );
+                return Optional.empty();
+            }
             List<HospitalCandidate> hospitals = nearbySearchOutcome.hospitals();
+            if (nearbySearchOutcome.terminalErrorCategory() != null && !hospitals.isEmpty()) {
+                log.info(
+                        "MCP planning nearby search terminated early but will use collected hospitals. tool={}, errorCategory={}, hospitalCount={}, attempts={}",
+                        toolName(nearbyTool),
+                        nearbySearchOutcome.terminalErrorCategory(),
+                        hospitals.size(),
+                        nearbySearchOutcome.attemptSummaries()
+                );
+            }
             if (hospitals.isEmpty()) {
                 log.warn(
                     "MCP planning nearby search exhausted fallback plans with no enrichable hospitals. tool={}, attempts={}",
-                    nearbyTool,
+                    toolName(nearbyTool),
                     nearbySearchOutcome.attemptSummaries()
                 );
                 return Optional.empty();
@@ -193,28 +218,37 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
 
     private NearbySearchOutcome searchHospitalsWithFallbackPlans(
             McpSyncClient client,
-            String nearbyTool,
+            ToolDescriptor nearbyTool,
             double userLatitude,
             double userLongitude,
             MedicalPlanningIntent planningIntent,
             MedicalReportPlanningProperties.Mcp mcpProperties,
-            String searchDetailTool
+            ToolDescriptor searchDetailTool,
+            ToolDescriptor textSearchTool,
+            ToolDescriptor regeocodeTool
     ) {
         Map<String, HospitalCandidate> hospitalsByKey = new LinkedHashMap<>();
         List<String> attemptSummaries = new ArrayList<>();
         int targetCandidateCount = resolveSearchTargetCandidateCount(planningIntent);
+        ToolErrorCategory terminalErrorCategory = null;
+        List<NearbySearchPlan> nearbySearchPlans = buildNearbySearchPlans(planningIntent, mcpProperties);
+        int terminalPlanIndex = -1;
 
-        for (NearbySearchPlan searchPlan : buildNearbySearchPlans(planningIntent, mcpProperties)) {
+        for (int index = 0; index < nearbySearchPlans.size(); index++) {
+            NearbySearchPlan searchPlan = nearbySearchPlans.get(index);
             Map<String, Object> nearbyArgs = new HashMap<>();
-            nearbyArgs.put("location", formatLocation(userLongitude, userLatitude));
-            nearbyArgs.put("radius", String.valueOf(searchPlan.radiusMeters()));
-            nearbyArgs.put("keywords", searchPlan.keyword());
+            putToolArg(nearbyTool, nearbyArgs, "location", formatLocation(userLongitude, userLatitude));
+            putToolArg(nearbyTool, nearbyArgs, "radius", String.valueOf(searchPlan.radiusMeters()));
+            putToolArg(nearbyTool, nearbyArgs, "keywords", searchPlan.keyword());
             if (!searchPlan.hospitalTypes().isBlank()) {
-                nearbyArgs.put("types", searchPlan.hospitalTypes());
+                putToolArg(nearbyTool, nearbyArgs, "types", searchPlan.hospitalTypes(), true);
             }
 
-            Object nearbyPayload = callTool(client, nearbyTool, nearbyArgs).orElse(null);
-            List<HospitalCandidate> hospitals = extractHospitals(client, nearbyPayload, userLatitude, userLongitude, searchDetailTool);
+            ToolCallOutcome nearbyOutcome = callTool(client, nearbyTool, nearbyArgs);
+            Object nearbyPayload = nearbyOutcome.payload();
+            List<HospitalCandidate> hospitals = nearbyOutcome.success()
+                    ? extractHospitals(nearbyPayload, userLatitude, userLongitude)
+                    : List.of();
             for (HospitalCandidate hospital : hospitals) {
                 hospitalsByKey.putIfAbsent(hospitalKey(hospital), hospital);
             }
@@ -223,14 +257,120 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
                     "args=" + nearbyArgs
                             + ", found=" + hospitals.size()
                             + ", uniqueTotal=" + hospitalsByKey.size()
-                            + ", payloadSummary=" + summarizePayload(nearbyPayload)
+                            + ", errorCategory=" + nearbyOutcome.errorCategory()
+                            + ", errorText=" + summarizePayload(nearbyOutcome.errorText())
+                            + ", payloadSummary=" + nearbyOutcome.rawSummary()
             );
+            if (!nearbyOutcome.success()) {
+                terminalErrorCategory = nearbyOutcome.errorCategory();
+                terminalPlanIndex = index;
+                break;
+            }
             if (hospitalsByKey.size() >= targetCandidateCount) {
                 break;
             }
         }
 
-        return new NearbySearchOutcome(List.copyOf(hospitalsByKey.values()), List.copyOf(attemptSummaries));
+        if (hospitalsByKey.isEmpty()
+                && shouldAttemptTextSearchFallback(terminalErrorCategory)
+                && textSearchTool != null
+                && regeocodeTool != null) {
+            CityTextSearchOutcome textSearchOutcome = searchHospitalsWithCityTextFallback(
+                    client,
+                    textSearchTool,
+                    regeocodeTool,
+                    userLatitude,
+                    userLongitude,
+                    planningIntent,
+                    mcpProperties,
+                    nearbySearchPlans,
+                    terminalPlanIndex,
+                    attemptSummaries
+            );
+            for (HospitalCandidate hospital : textSearchOutcome.hospitals()) {
+                hospitalsByKey.putIfAbsent(hospitalKey(hospital), hospital);
+            }
+            if (textSearchOutcome.terminalErrorCategory() != null) {
+                terminalErrorCategory = textSearchOutcome.terminalErrorCategory();
+            }
+        }
+
+        List<HospitalCandidate> rankedHospitals = hospitalsByKey.values().stream()
+                .sorted(hospitalComparator(planningIntent))
+                .toList();
+        List<HospitalCandidate> enrichedHospitals = enrichHospitalLocations(
+                client,
+                rankedHospitals,
+                searchDetailTool,
+                planningIntent,
+                userLatitude,
+                userLongitude
+        );
+        List<HospitalCandidate> usableHospitals = enrichedHospitals.stream()
+                .filter(hospital -> hospital.distanceMeters() != UNRESOLVED_DISTANCE_METERS)
+                .toList();
+        return new NearbySearchOutcome(List.copyOf(usableHospitals), List.copyOf(attemptSummaries), terminalErrorCategory);
+    }
+
+    private boolean shouldAttemptTextSearchFallback(ToolErrorCategory terminalErrorCategory) {
+        return terminalErrorCategory == ToolErrorCategory.RATE_LIMIT
+                || terminalErrorCategory == ToolErrorCategory.SERVER_BUSY
+                || terminalErrorCategory == ToolErrorCategory.TIMEOUT;
+    }
+
+    private CityTextSearchOutcome searchHospitalsWithCityTextFallback(
+            McpSyncClient client,
+            ToolDescriptor textSearchTool,
+            ToolDescriptor regeocodeTool,
+            double userLatitude,
+            double userLongitude,
+            MedicalPlanningIntent planningIntent,
+            MedicalReportPlanningProperties.Mcp mcpProperties,
+            List<NearbySearchPlan> nearbySearchPlans,
+            int startPlanIndex,
+            List<String> attemptSummaries
+    ) {
+        String city = resolveCity(client, regeocodeTool, formatLocation(userLongitude, userLatitude));
+        if (city == null || city.isBlank()) {
+            attemptSummaries.add("textSearchSkipped=missing_city");
+            return CityTextSearchOutcome.empty(null);
+        }
+
+        Map<String, HospitalCandidate> hospitalsByKey = new LinkedHashMap<>();
+        ToolErrorCategory terminalErrorCategory = null;
+        int targetCandidateCount = resolveTopK(planningIntent);
+        for (CityTextSearchPlan searchPlan : buildCityTextSearchPlans(nearbySearchPlans, startPlanIndex, planningIntent, mcpProperties)) {
+            Map<String, Object> args = new HashMap<>();
+            putToolArg(textSearchTool, args, "keywords", searchPlan.keyword());
+            putToolArg(textSearchTool, args, "city", city);
+            if (!searchPlan.hospitalTypes().isBlank()) {
+                putToolArg(textSearchTool, args, "types", searchPlan.hospitalTypes(), true);
+            }
+
+            ToolCallOutcome outcome = callTool(client, textSearchTool, args);
+            List<HospitalCandidate> hospitals = outcome.success()
+                    ? extractHospitals(outcome.payload(), userLatitude, userLongitude)
+                    : List.of();
+            for (HospitalCandidate hospital : hospitals) {
+                hospitalsByKey.putIfAbsent(hospitalKey(hospital), hospital);
+            }
+            attemptSummaries.add(
+                    "textArgs=" + args
+                            + ", found=" + hospitals.size()
+                            + ", uniqueTotal=" + hospitalsByKey.size()
+                            + ", errorCategory=" + outcome.errorCategory()
+                            + ", errorText=" + summarizePayload(outcome.errorText())
+                            + ", payloadSummary=" + outcome.rawSummary()
+            );
+            if (!outcome.success()) {
+                terminalErrorCategory = outcome.errorCategory();
+                break;
+            }
+            if (hospitalsByKey.size() >= targetCandidateCount) {
+                break;
+            }
+        }
+        return new CityTextSearchOutcome(List.copyOf(hospitalsByKey.values()), terminalErrorCategory);
     }
 
     private boolean isExpectedServer(McpSyncClient client, String expectedServerName) {
@@ -328,6 +468,46 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
         return plans;
     }
 
+    private List<CityTextSearchPlan> buildCityTextSearchPlans(
+            List<NearbySearchPlan> nearbySearchPlans,
+            int startPlanIndex,
+            MedicalPlanningIntent planningIntent,
+            MedicalReportPlanningProperties.Mcp mcpProperties
+    ) {
+        List<NearbySearchPlan> sourcePlans = nearbySearchPlans == null || nearbySearchPlans.isEmpty()
+                ? buildNearbySearchPlans(planningIntent, mcpProperties)
+                : nearbySearchPlans;
+        int effectiveStart = startPlanIndex >= 0 && startPlanIndex < sourcePlans.size() ? startPlanIndex : 0;
+
+        List<CityTextSearchPlan> textPlans = new ArrayList<>();
+        Set<String> signatures = new LinkedHashSet<>();
+        for (int index = effectiveStart; index < sourcePlans.size(); index++) {
+            NearbySearchPlan sourcePlan = sourcePlans.get(index);
+            addCityTextSearchPlan(textPlans, signatures, sourcePlan.keyword(), sourcePlan.hospitalTypes());
+        }
+        return textPlans;
+    }
+
+    private void addCityTextSearchPlan(
+            List<CityTextSearchPlan> plans,
+            Set<String> signatures,
+            String keyword,
+            String hospitalTypes
+    ) {
+        String normalizedKeyword = safeSearchText(keyword, "");
+        if (normalizedKeyword.isBlank()) {
+            return;
+        }
+        String normalizedTypes = safeSearchText(hospitalTypes, "");
+        String signature = normalizedKeyword.toLowerCase(Locale.ROOT)
+                + "|"
+                + normalizedTypes.toLowerCase(Locale.ROOT);
+        if (!signatures.add(signature)) {
+            return;
+        }
+        plans.add(new CityTextSearchPlan(normalizedKeyword, normalizedTypes));
+    }
+
     private int resolveSpecialtyFallbackRadius(MedicalPlanningIntent planningIntent) {
         String profileId = safeSearchText(planningIntent == null ? null : planningIntent.profileId(), "");
         return switch (profileId.toLowerCase(Locale.ROOT)) {
@@ -389,9 +569,9 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
             HospitalCandidate hospital,
             double userLongitude,
             double userLatitude,
-            String walkTool,
-            String driveTool,
-            String transitTool,
+            ToolDescriptor walkTool,
+            ToolDescriptor driveTool,
+            ToolDescriptor transitTool,
             CityPair cityPair,
             RouteExecutionState routeState
     ) {
@@ -409,28 +589,31 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
     private void maybeAddWalkingRoute(
             List<MedicalHospitalRouteOption> routes,
             McpSyncClient client,
-            String toolName,
+            ToolDescriptor tool,
             double userLongitude,
             double userLatitude,
             String destination,
             RouteExecutionState routeState
     ) {
-        if (toolName == null || routeState.isCircuitOpen(RouteMode.WALK)) {
+        if (tool == null || routeState.isCircuitOpen(RouteMode.WALK)) {
             return;
         }
 
         Map<String, Object> args = new HashMap<>();
-        args.put("origin", formatLocation(userLongitude, userLatitude));
-        args.put("destination", destination);
+        putToolArg(tool, args, "origin", formatLocation(userLongitude, userLatitude));
+        putToolArg(tool, args, "destination", destination);
 
         routeState.recordAttempt(RouteMode.WALK);
-        Object payload = callTool(client, toolName, args, RouteMode.WALK, routeState).orElse(null);
-        RouteMetric metric = extractRouteMetric(payload, RouteMode.WALK);
+        ToolCallOutcome outcome = callTool(client, tool, args, true, RouteMode.WALK, routeState);
+        if (!outcome.success()) {
+            return;
+        }
+        RouteMetric metric = extractRouteMetric(outcome.payload(), RouteMode.WALK);
         if (metric == null) {
             routeState.recordMetricMiss(RouteMode.WALK);
             return;
         }
-        List<String> steps = extractRouteSteps(payload, RouteMode.WALK);
+        List<String> steps = extractRouteSteps(outcome.payload(), RouteMode.WALK);
 
         routeState.recordSuccess(RouteMode.WALK);
         routes.add(new MedicalHospitalRouteOption(
@@ -445,28 +628,31 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
     private void maybeAddDrivingRoute(
             List<MedicalHospitalRouteOption> routes,
             McpSyncClient client,
-            String toolName,
+            ToolDescriptor tool,
             double userLongitude,
             double userLatitude,
             String destination,
             RouteExecutionState routeState
     ) {
-        if (toolName == null || routeState.isCircuitOpen(RouteMode.DRIVE)) {
+        if (tool == null || routeState.isCircuitOpen(RouteMode.DRIVE)) {
             return;
         }
 
         Map<String, Object> args = new HashMap<>();
-        args.put("origin", formatLocation(userLongitude, userLatitude));
-        args.put("destination", destination);
+        putToolArg(tool, args, "origin", formatLocation(userLongitude, userLatitude));
+        putToolArg(tool, args, "destination", destination);
 
         routeState.recordAttempt(RouteMode.DRIVE);
-        Object payload = callTool(client, toolName, args, RouteMode.DRIVE, routeState).orElse(null);
-        RouteMetric metric = extractRouteMetric(payload, RouteMode.DRIVE);
+        ToolCallOutcome outcome = callTool(client, tool, args, true, RouteMode.DRIVE, routeState);
+        if (!outcome.success()) {
+            return;
+        }
+        RouteMetric metric = extractRouteMetric(outcome.payload(), RouteMode.DRIVE);
         if (metric == null) {
             routeState.recordMetricMiss(RouteMode.DRIVE);
             return;
         }
-        List<String> steps = extractRouteSteps(payload, RouteMode.DRIVE);
+        List<String> steps = extractRouteSteps(outcome.payload(), RouteMode.DRIVE);
 
         routeState.recordSuccess(RouteMode.DRIVE);
         routes.add(new MedicalHospitalRouteOption(
@@ -481,46 +667,49 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
     private void maybeAddTransitRoute(
             List<MedicalHospitalRouteOption> routes,
             McpSyncClient client,
-            String toolName,
+            ToolDescriptor tool,
             double userLongitude,
             double userLatitude,
             String destination,
             CityPair cityPair,
             RouteExecutionState routeState
     ) {
-        if (toolName == null
+        if (tool == null
                 || routeState.isCircuitOpen(RouteMode.TRANSIT)
                 || cityPair == null
                 || cityPair.originCity() == null
                 || cityPair.destinationCity() == null) {
             log.debug(
                     "MCP transit route skipped. toolName={}, cityPairPresent={}",
-                    toolName,
+                    toolName(tool),
                     cityPair != null
             );
             return;
         }
 
         Map<String, Object> args = new HashMap<>();
-        args.put("origin", formatLocation(userLongitude, userLatitude));
-        args.put("destination", destination);
-        args.put("city", cityPair.originCity());
-        args.put("cityd", cityPair.destinationCity());
+        putToolArg(tool, args, "origin", formatLocation(userLongitude, userLatitude));
+        putToolArg(tool, args, "destination", destination);
+        putToolArg(tool, args, "city", cityPair.originCity());
+        putToolArg(tool, args, "cityd", cityPair.destinationCity());
 
         routeState.recordAttempt(RouteMode.TRANSIT);
-        Object payload = callTool(client, toolName, args, RouteMode.TRANSIT, routeState).orElse(null);
-        RouteMetric metric = extractRouteMetric(payload, RouteMode.TRANSIT);
+        ToolCallOutcome outcome = callTool(client, tool, args, true, RouteMode.TRANSIT, routeState);
+        if (!outcome.success()) {
+            return;
+        }
+        RouteMetric metric = extractRouteMetric(outcome.payload(), RouteMode.TRANSIT);
         if (metric == null) {
             routeState.recordMetricMiss(RouteMode.TRANSIT);
             log.debug(
                     "MCP transit route metric missing. tool={}, args={}, payloadSummary={}",
-                    toolName,
+                    toolName(tool),
                     args,
-                    summarizePayload(payload)
+                    summarizePayload(outcome.payload())
             );
             return;
         }
-        List<String> steps = extractRouteSteps(payload, RouteMode.TRANSIT);
+        List<String> steps = extractRouteSteps(outcome.payload(), RouteMode.TRANSIT);
 
         routeState.recordSuccess(RouteMode.TRANSIT);
         routes.add(new MedicalHospitalRouteOption(
@@ -534,7 +723,7 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
 
     private CityPair resolveCityPair(
             McpSyncClient client,
-            String regeocodeTool,
+            ToolDescriptor regeocodeTool,
             double userLongitude,
             double userLatitude,
             List<HospitalCandidate> hospitals
@@ -553,69 +742,69 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
         return new CityPair(originCity, destinationCity);
     }
 
-    private String resolveCity(McpSyncClient client, String regeocodeTool, String location) {
+    private String resolveCity(McpSyncClient client, ToolDescriptor regeocodeTool, String location) {
         if (location == null || location.isBlank()) {
             return null;
         }
         Map<String, Object> args = new HashMap<>();
-        args.put("location", location);
-        Object payload = callTool(client, regeocodeTool, args).orElse(null);
-        String city = findString(payload, "city");
+        putToolArg(regeocodeTool, args, "location", location);
+        ToolCallOutcome outcome = callTool(client, regeocodeTool, args);
+        if (!outcome.success()) {
+            return null;
+        }
+        String city = findString(outcome.payload(), "city");
         if (city == null || city.isBlank()) {
-            city = findString(payload, "district");
+            city = findString(outcome.payload(), "district");
         }
         return (city == null || city.isBlank()) ? null : city;
     }
 
-    private Optional<Object> callTool(McpSyncClient client, String toolName, Map<String, Object> args) {
-        return callTool(client, toolName, args, null, null);
+    private ToolCallOutcome callTool(McpSyncClient client, ToolDescriptor tool, Map<String, Object> args) {
+        return callTool(client, tool, args, true, null, null);
     }
 
-    private Optional<Object> callTool(
+    private ToolCallOutcome callTool(
             McpSyncClient client,
-            String toolName,
+            ToolDescriptor tool,
             Map<String, Object> args,
+            boolean logFailures,
             RouteMode routeMode,
             RouteExecutionState routeState
     ) {
-        try {
-            McpSchema.CallToolResult result = client.callTool(new McpSchema.CallToolRequest(toolName, args));
-            if (Boolean.TRUE.equals(result.isError())) {
-                log.warn("MCP tool call marked error. tool={}, args={}", toolName, args);
-                markRouteFailure(routeMode, routeState, false);
-                return Optional.empty();
-            }
-            if (result.structuredContent() instanceof Map<?, ?> map) {
-                if (map.containsKey("error")) {
-                    log.warn("MCP tool call returned structured error field. tool={}, args={}, payloadSummary={}", toolName, args, summarizePayload(map));
-                    markRouteFailure(routeMode, routeState, false);
-                    return Optional.empty();
-                }
-            }
-            if (result.structuredContent() != null) {
-                return Optional.of(result.structuredContent());
-            }
-            if (result.content() == null || result.content().isEmpty()) {
-                markRouteFailure(routeMode, routeState, false);
-                return Optional.empty();
-            }
-
-            for (McpSchema.Content content : result.content()) {
-                if (content instanceof McpSchema.TextContent textContent) {
-                    Object parsed = parseJsonLikeText(textContent.text());
-                    if (parsed != null) {
-                        return Optional.of(parsed);
-                    }
-                }
-            }
+        if (tool == null || tool.name() == null || tool.name().isBlank()) {
             markRouteFailure(routeMode, routeState, false);
-            return Optional.empty();
+            return ToolCallOutcome.failure(null, "Tool descriptor missing", ToolErrorCategory.UNKNOWN, false, "null");
+        }
+        try {
+            McpSchema.CallToolResult result = client.callTool(new McpSchema.CallToolRequest(tool.name(), args));
+            Object payload = result.structuredContent();
+            String contentText = collectTextContent(result.content());
+            if (payload == null) {
+                payload = parseJsonLikeText(contentText);
+            }
+            String payloadSummary = payload == null ? summarizePayload(contentText) : summarizePayload(payload);
+            String structuredErrorText = extractStructuredErrorText(payload);
+            if (Boolean.TRUE.equals(result.isError())) {
+                String errorText = firstNonBlank(structuredErrorText, normalizeErrorText(contentText), payloadSummary);
+                ToolErrorCategory errorCategory = classifyErrorCategory(errorText, false);
+                markRouteFailure(routeMode, routeState, errorCategory == ToolErrorCategory.TIMEOUT);
+                maybeLogToolFailure(logFailures, tool.name(), args, errorText, errorCategory, payloadSummary);
+                return ToolCallOutcome.failure(payload, errorText, errorCategory, errorCategory == ToolErrorCategory.TIMEOUT, payloadSummary);
+            }
+            if (structuredErrorText != null) {
+                ToolErrorCategory errorCategory = classifyErrorCategory(structuredErrorText, false);
+                markRouteFailure(routeMode, routeState, errorCategory == ToolErrorCategory.TIMEOUT);
+                maybeLogToolFailure(logFailures, tool.name(), args, structuredErrorText, errorCategory, payloadSummary);
+                return ToolCallOutcome.failure(payload, structuredErrorText, errorCategory, errorCategory == ToolErrorCategory.TIMEOUT, payloadSummary);
+            }
+            return ToolCallOutcome.success(payload, payloadSummary);
         }
         catch (Exception ex) {
             boolean timeout = isTimeout(ex);
+            ToolErrorCategory errorCategory = classifyErrorCategory(ex.getMessage(), timeout);
             markRouteFailure(routeMode, routeState, timeout);
-            log.warn("MCP tool call failed. tool={}, args={}, reason={}", toolName, args, ex.getMessage());
-            return Optional.empty();
+            maybeLogToolFailure(logFailures, tool.name(), args, ex.getMessage(), errorCategory, "null");
+            return ToolCallOutcome.failure(null, ex.getMessage(), errorCategory, timeout, "null");
         }
     }
 
@@ -643,13 +832,7 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
         }
     }
 
-    private List<HospitalCandidate> extractHospitals(
-            McpSyncClient client,
-            Object payload,
-            double userLatitude,
-            double userLongitude,
-            String searchDetailTool
-    ) {
+    private List<HospitalCandidate> extractHospitals(Object payload, double userLatitude, double userLongitude) {
         List<Map<String, Object>> rows = extractRows(payload);
         if (rows.isEmpty()) {
             return List.of();
@@ -664,14 +847,16 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
             String poiId = asString(row.get("id"));
             String address = asString(row.get("address"));
             String location = asString(row.get("location"));
-            if ((location == null || location.isBlank()) && poiId != null && searchDetailTool != null) {
-                location = resolvePoiLocation(client, searchDetailTool, poiId);
-            }
             double[] latLon = parseLocation(location);
 
             long distance = asLong(row.get("distance"), -1L);
             if (distance < 0 && latLon != null) {
                 distance = Math.round(haversineMeters(userLatitude, userLongitude, latLon[1], latLon[0]));
+            }
+            if (distance < 0) {
+                if (poiId != null && !poiId.isBlank()) {
+                    distance = UNRESOLVED_DISTANCE_METERS;
+                }
             }
             if (distance < 0) {
                 log.debug(
@@ -701,7 +886,8 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
                     likelyHospital,
                     lowCapabilityFacility,
                     Math.max(0L, distance),
-                    location
+                    location,
+                    poiId
             ));
         }
         return hospitals;
@@ -761,21 +947,6 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
                 || facilityHint.contains("tertiary");
     }
 
-    private String resolvePoiLocation(McpSyncClient client, String searchDetailTool, String poiId) {
-        if (searchDetailTool == null || poiId == null || poiId.isBlank()) {
-            return null;
-        }
-        Map<String, Object> args = new HashMap<>();
-        args.put("id", poiId);
-        Object payload = callTool(client, searchDetailTool, args).orElse(null);
-        String location = findString(payload, "location");
-        if (location == null || location.isBlank()) {
-            log.debug("MCP search detail location missing. tool={}, poiId={}, payloadSummary={}", searchDetailTool, poiId, summarizePayload(payload));
-            return null;
-        }
-        return location;
-    }
-
     private String hospitalKey(HospitalCandidate hospital) {
         if (hospital == null) {
             return "";
@@ -784,7 +955,7 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
                 + "|"
                 + safeSearchText(hospital.address(), "")
                 + "|"
-                + safeSearchText(hospital.destinationLocation(), "");
+                + safeSearchText(hospital.poiId(), safeSearchText(hospital.destinationLocation(), ""));
     }
 
     private List<Map<String, Object>> extractRows(Object payload) {
@@ -818,24 +989,239 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
         return extractRows(pois);
     }
 
-    private String resolveToolName(List<McpSchema.Tool> tools, String exactName, List<String> keywords) {
-        String exact = tools.stream()
-                .map(McpSchema.Tool::name)
-                .filter(exactName::equals)
+    private ToolDescriptor resolveToolDescriptor(List<McpSchema.Tool> tools, String exactName, List<String> keywords) {
+        McpSchema.Tool exact = tools.stream()
+                .filter(tool -> exactName.equals(tool.name()))
                 .findFirst()
                 .orElse(null);
         if (exact != null) {
-            return exact;
+            return toToolDescriptor(exact);
         }
 
         return tools.stream()
-                .map(McpSchema.Tool::name)
-                .filter(name -> {
-                    String normalized = name == null ? "" : name.toLowerCase(Locale.ROOT);
+                .filter(tool -> {
+                    String normalized = tool == null || tool.name() == null ? "" : tool.name().toLowerCase(Locale.ROOT);
                     return keywords.stream().anyMatch(keyword -> normalized.contains(keyword.toLowerCase(Locale.ROOT)));
                 })
                 .findFirst()
+                .map(this::toToolDescriptor)
                 .orElse(null);
+    }
+
+    private ToolDescriptor toToolDescriptor(McpSchema.Tool tool) {
+        Map<String, Object> properties = tool == null || tool.inputSchema() == null ? null : tool.inputSchema().properties();
+        Set<String> supportedProperties = new LinkedHashSet<>();
+        if (properties != null) {
+            for (String propertyName : properties.keySet()) {
+                if (propertyName != null && !propertyName.isBlank()) {
+                    supportedProperties.add(propertyName.trim().toLowerCase(Locale.ROOT));
+                }
+            }
+        }
+        return new ToolDescriptor(
+                tool == null ? null : tool.name(),
+                properties != null,
+                Set.copyOf(supportedProperties)
+        );
+    }
+
+    private void putToolArg(ToolDescriptor tool, Map<String, Object> args, String property, Object value) {
+        putToolArg(tool, args, property, value, false);
+    }
+
+    private void putToolArg(
+            ToolDescriptor tool,
+            Map<String, Object> args,
+            String property,
+            Object value,
+            boolean requireExplicitSupport
+    ) {
+        if (tool == null || args == null || property == null || property.isBlank() || value == null) {
+            return;
+        }
+        if (value instanceof String stringValue && stringValue.isBlank()) {
+            return;
+        }
+        if (!tool.supportsProperty(property, requireExplicitSupport)) {
+            return;
+        }
+        args.put(property, value);
+    }
+
+    private List<HospitalCandidate> enrichHospitalLocations(
+            McpSyncClient client,
+            List<HospitalCandidate> hospitals,
+            ToolDescriptor searchDetailTool,
+            MedicalPlanningIntent planningIntent,
+            double userLatitude,
+            double userLongitude
+    ) {
+        if (searchDetailTool == null || hospitals == null || hospitals.isEmpty()) {
+            return hospitals == null ? List.of() : hospitals;
+        }
+        int enrichmentLimit = Math.max(resolveTopK(planningIntent) * 2, 6);
+        List<HospitalCandidate> enrichedHospitals = new ArrayList<>(hospitals);
+        int attempted = 0;
+        int succeeded = 0;
+        int failed = 0;
+        EnumSet<ToolErrorCategory> errorCategories = EnumSet.noneOf(ToolErrorCategory.class);
+
+        for (int index = 0; index < Math.min(enrichedHospitals.size(), enrichmentLimit); index++) {
+            HospitalCandidate hospital = enrichedHospitals.get(index);
+            if (hospital == null
+                    || (hospital.destinationLocation() != null && !hospital.destinationLocation().isBlank())
+                    || hospital.poiId() == null
+                    || hospital.poiId().isBlank()) {
+                continue;
+            }
+            attempted++;
+            Map<String, Object> args = new HashMap<>();
+            putToolArg(searchDetailTool, args, "id", hospital.poiId());
+            ToolCallOutcome outcome = callTool(client, searchDetailTool, args, false, null, null);
+            String resolvedLocation = findString(outcome.payload(), "location");
+            if (outcome.success() && resolvedLocation != null && !resolvedLocation.isBlank()) {
+                long resolvedDistance = hospital.distanceMeters();
+                if (resolvedDistance == UNRESOLVED_DISTANCE_METERS) {
+                    double[] latLon = parseLocation(resolvedLocation);
+                    if (latLon != null) {
+                        resolvedDistance = Math.round(haversineMeters(userLatitude, userLongitude, latLon[1], latLon[0]));
+                    }
+                }
+                enrichedHospitals.set(index, hospital.withResolvedLocation(resolvedLocation, resolvedDistance));
+                succeeded++;
+                continue;
+            }
+            failed++;
+            if (outcome.errorCategory() != null) {
+                errorCategories.add(outcome.errorCategory());
+            }
+        }
+
+        if (attempted > 0) {
+            if (failed > 0) {
+                log.info(
+                        "MCP detail enrichment finished with partial misses. tool={}, attempted={}, succeeded={}, failed={}, errorCategories={}",
+                        toolName(searchDetailTool),
+                        attempted,
+                        succeeded,
+                        failed,
+                        errorCategories
+                );
+            }
+            else {
+                log.debug(
+                        "MCP detail enrichment finished. tool={}, attempted={}, succeeded={}, failed={}",
+                        toolName(searchDetailTool),
+                        attempted,
+                        succeeded,
+                        failed
+                );
+            }
+        }
+        return List.copyOf(enrichedHospitals);
+    }
+
+    private void maybeLogToolFailure(
+            boolean logFailures,
+            String toolName,
+            Map<String, Object> args,
+            String errorText,
+            ToolErrorCategory errorCategory,
+            String payloadSummary
+    ) {
+        if (!logFailures) {
+            return;
+        }
+        log.warn(
+                "MCP tool call failed. tool={}, args={}, errorText={}, errorCategory={}, payloadSummary={}",
+                toolName,
+                args,
+                errorText == null ? "" : errorText,
+                errorCategory,
+                payloadSummary
+        );
+    }
+
+    private String collectTextContent(List<McpSchema.Content> contents) {
+        if (contents == null || contents.isEmpty()) {
+            return null;
+        }
+        List<String> texts = new ArrayList<>();
+        for (McpSchema.Content content : contents) {
+            if (content instanceof McpSchema.TextContent textContent) {
+                if (textContent.text() != null && !textContent.text().isBlank()) {
+                    texts.add(textContent.text().trim());
+                }
+            }
+        }
+        if (texts.isEmpty()) {
+            return null;
+        }
+        return String.join("\n", texts);
+    }
+
+    private String extractStructuredErrorText(Object payload) {
+        Map<String, Object> map = asMap(payload);
+        if (map == null || !map.containsKey("error")) {
+            return null;
+        }
+        Object errorPayload = map.get("error");
+        String direct = asString(errorPayload);
+        if (direct != null) {
+            return direct;
+        }
+        String nested = firstNonBlank(
+                findString(errorPayload, "message"),
+                findString(errorPayload, "msg"),
+                findString(errorPayload, "info"),
+                findString(errorPayload, "detail"),
+                findString(errorPayload, "error")
+        );
+        if (nested != null) {
+            return nested;
+        }
+        return summarizePayload(errorPayload);
+    }
+
+    private String normalizeErrorText(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        String normalized = text.trim();
+        return normalized.length() > 500 ? normalized.substring(0, 500) + "...(truncated)" : normalized;
+    }
+
+    private ToolErrorCategory classifyErrorCategory(String errorText, boolean timeout) {
+        if (timeout) {
+            return ToolErrorCategory.TIMEOUT;
+        }
+        if (errorText == null || errorText.isBlank()) {
+            return ToolErrorCategory.UNKNOWN;
+        }
+        String normalized = errorText.toUpperCase(Locale.ROOT);
+        if (normalized.contains("QPS")
+                || normalized.contains("ACCESS_TOO_FREQUENT")
+                || normalized.contains("CUQPS_HAS_EXCEEDED_THE_LIMIT")
+                || normalized.contains("CKQPS_HAS_EXCEEDED_THE_LIMIT")) {
+            return ToolErrorCategory.RATE_LIMIT;
+        }
+        if (normalized.contains("INVALID_PARAMS")
+                || normalized.contains("MISSING_REQUIRED_PARAMS")
+                || normalized.contains("INVALID_USER_KEY")
+                || normalized.contains("ILLEGAL_USER_KEY")) {
+            return ToolErrorCategory.INVALID_PARAMS;
+        }
+        if (normalized.contains("SERVER_IS_BUSY")) {
+            return ToolErrorCategory.SERVER_BUSY;
+        }
+        if (normalized.contains("TIMEOUT")) {
+            return ToolErrorCategory.TIMEOUT;
+        }
+        return ToolErrorCategory.TOOL_ERROR;
+    }
+
+    private String toolName(ToolDescriptor descriptor) {
+        return descriptor == null ? null : descriptor.name();
     }
 
     private Object parseJsonLikeText(String text) {
@@ -1302,8 +1688,21 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
             boolean likelyHospital,
             boolean lowCapabilityFacility,
             long distanceMeters,
-            String destinationLocation
+            String destinationLocation,
+            String poiId
     ) {
+        private HospitalCandidate withResolvedLocation(String destinationLocation, long distanceMeters) {
+            return new HospitalCandidate(
+                    name,
+                    address,
+                    tier3a,
+                    likelyHospital,
+                    lowCapabilityFacility,
+                    distanceMeters,
+                    destinationLocation,
+                    poiId
+            );
+        }
     }
 
     private record NearbySearchPlan(
@@ -1313,10 +1712,81 @@ public class McpMedicalHospitalPlanningGateway implements MedicalHospitalPlannin
     ) {
     }
 
+    private record CityTextSearchPlan(
+            String keyword,
+            String hospitalTypes
+    ) {
+    }
+
     private record NearbySearchOutcome(
             List<HospitalCandidate> hospitals,
-            List<String> attemptSummaries
+            List<String> attemptSummaries,
+            ToolErrorCategory terminalErrorCategory
     ) {
+        private boolean shouldFallbackToLocal() {
+            return hospitals.isEmpty()
+                    && (terminalErrorCategory == ToolErrorCategory.RATE_LIMIT
+                    || terminalErrorCategory == ToolErrorCategory.SERVER_BUSY
+                    || terminalErrorCategory == ToolErrorCategory.TIMEOUT
+                    || terminalErrorCategory == ToolErrorCategory.INVALID_PARAMS);
+        }
+    }
+
+    private record CityTextSearchOutcome(
+            List<HospitalCandidate> hospitals,
+            ToolErrorCategory terminalErrorCategory
+    ) {
+        private static CityTextSearchOutcome empty(ToolErrorCategory terminalErrorCategory) {
+            return new CityTextSearchOutcome(List.of(), terminalErrorCategory);
+        }
+    }
+
+    private record ToolDescriptor(
+            String name,
+            boolean schemaPropertiesKnown,
+            Set<String> supportedProperties
+    ) {
+        private boolean supportsProperty(String property, boolean requireExplicitSupport) {
+            if (property == null || property.isBlank()) {
+                return false;
+            }
+            if (!schemaPropertiesKnown) {
+                return !requireExplicitSupport;
+            }
+            return supportedProperties.contains(property.toLowerCase(Locale.ROOT));
+        }
+    }
+
+    private record ToolCallOutcome(
+            boolean success,
+            Object payload,
+            String errorText,
+            ToolErrorCategory errorCategory,
+            boolean timeout,
+            String rawSummary
+    ) {
+        private static ToolCallOutcome success(Object payload, String rawSummary) {
+            return new ToolCallOutcome(true, payload, null, null, false, rawSummary);
+        }
+
+        private static ToolCallOutcome failure(
+                Object payload,
+                String errorText,
+                ToolErrorCategory errorCategory,
+                boolean timeout,
+                String rawSummary
+        ) {
+            return new ToolCallOutcome(false, payload, errorText, errorCategory, timeout, rawSummary);
+        }
+    }
+
+    private enum ToolErrorCategory {
+        RATE_LIMIT,
+        INVALID_PARAMS,
+        SERVER_BUSY,
+        TIMEOUT,
+        TOOL_ERROR,
+        UNKNOWN
     }
 
     private record CityPair(String originCity, String destinationCity) {

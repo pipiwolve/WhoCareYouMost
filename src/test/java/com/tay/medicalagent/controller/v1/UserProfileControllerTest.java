@@ -59,7 +59,7 @@ class UserProfileControllerTest {
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.message").value("success"))
+                .andExpect(jsonPath("$.message").value("OK"))
                 .andExpect(jsonPath("$.data.welcomeMessage").value("你好，张三。我是你的医疗向导，请问今天哪里不舒服？"))
                 .andReturn();
 
@@ -97,7 +97,7 @@ class UserProfileControllerTest {
                                 }
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.message").value("success"))
+                .andExpect(jsonPath("$.message").value("OK"))
                 .andExpect(jsonPath("$.data.userId").value("usr_existing"))
                 .andExpect(jsonPath("$.data.sessionId").value(org.hamcrest.Matchers.startsWith("sess_")));
 

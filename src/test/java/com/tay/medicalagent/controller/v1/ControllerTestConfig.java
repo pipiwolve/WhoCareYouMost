@@ -3,6 +3,7 @@ package com.tay.medicalagent.controller.v1;
 import com.tay.medicalagent.session.ConsultationSessionRepository;
 import com.tay.medicalagent.session.ConsultationSessionService;
 import com.tay.medicalagent.session.InMemoryConsultationSessionRepository;
+import com.tay.medicalagent.app.service.chat.MedicalChatPreviewReplyDecorator;
 import com.tay.medicalagent.web.support.MedicalApiViewMapper;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -23,5 +24,10 @@ class ControllerTestConfig {
     @Bean
     MedicalApiViewMapper medicalApiViewMapper() {
         return new MedicalApiViewMapper();
+    }
+
+    @Bean
+    MedicalChatPreviewReplyDecorator medicalChatPreviewReplyDecorator() {
+        return new MedicalChatPreviewReplyDecorator();
     }
 }

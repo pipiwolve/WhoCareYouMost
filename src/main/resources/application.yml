@@ -50,11 +50,11 @@ server:
 logging:
   level:
     io.modelcontextprotocol.client.transport.StdioClientTransport: warn
-    org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor: debug
-    com.tay.medicalagent.interceptor.MyLogModelInterceptor: debug
-    com.tay.medicalagent.app.rag.hook.MedicalRagAgentHook: debug
-    com.tay.medicalagent.app.rag.retrieval.ElasticsearchHybridSearchClient: debug
-    com.tay.medicalagent.app.rag.interceptor.MedicalRagContextInterceptor: debug
+    org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor: info
+    com.tay.medicalagent.interceptor.MyLogModelInterceptor: info
+    com.tay.medicalagent.app.rag.hook.MedicalRagAgentHook: info
+    com.tay.medicalagent.app.rag.retrieval.ElasticsearchHybridSearchClient: info
+    com.tay.medicalagent.app.rag.interceptor.MedicalRagContextInterceptor: info
 
 springdoc:
   swagger-ui:
@@ -123,12 +123,20 @@ medical:
   report:
     pdf:
       font-path: ${MEDICAL_REPORT_PDF_FONT_PATH:}
+    snapshot:
+      ttl: ${MEDICAL_REPORT_SNAPSHOT_TTL:30m}
+      max-sessions: ${MEDICAL_REPORT_SNAPSHOT_MAX_SESSIONS:500}
+      cleanup-interval: ${MEDICAL_REPORT_SNAPSHOT_CLEANUP_INTERVAL:5m}
+      stale-lock-ttl: ${MEDICAL_REPORT_SNAPSHOT_STALE_LOCK_TTL:60s}
+      degraded-planning-retry-after: ${MEDICAL_REPORT_SNAPSHOT_DEGRADED_PLANNING_RETRY_AFTER:30s}
     planning:
       enabled: true
+      # mode: off|local|mcp|agentic
+      # Default to deterministic MCP for report queries. Agentic mode remains opt-in
+      # via env when we explicitly want the extra latency/variance tradeoff.
+      mode: ${MEDICAL_REPORT_PLANNING_MODE:mcp}
       top-k: 3
       route-planning-enabled: true
-      mcp-enabled: ${MEDICAL_REPORT_PLANNING_MCP_ENABLED:true}
-      agent-enabled: ${MEDICAL_REPORT_PLANNING_AGENT_ENABLED:true}
       mcp:
         server-name: ${MEDICAL_REPORT_PLANNING_MCP_SERVER_NAME:mcp-server/amap-maps}
         timeout-ms: ${MEDICAL_REPORT_PLANNING_MCP_TIMEOUT_MS:6000}

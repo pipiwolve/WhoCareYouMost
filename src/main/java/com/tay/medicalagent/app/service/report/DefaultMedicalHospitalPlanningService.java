@@ -47,7 +47,8 @@ public class DefaultMedicalHospitalPlanningService implements MedicalHospitalPla
             MedicalDiagnosisReport report,
             MedicalPlanningIntent planningIntent
     ) {
-        if (!planningProperties.isEnabled()) {
+        MedicalReportPlanningProperties.PlanningMode planningMode = planningProperties.getResolvedMode();
+        if (!planningProperties.isEnabled() || planningMode == MedicalReportPlanningProperties.PlanningMode.OFF) {
             return new MedicalHospitalPlanningSummary(List.of(), false, "医院规划服务未启用", "disabled");
         }
         if (report == null || !report.shouldGenerateReport()) {
@@ -65,7 +66,11 @@ public class DefaultMedicalHospitalPlanningService implements MedicalHospitalPla
             return new MedicalHospitalPlanningSummary(List.of(), false, "未上传经纬度，无法进行就近医院规划", "location_missing");
         }
 
-        if (planningProperties.isMcpEnabled() && planningProperties.isAgentEnabled()) {
+        if (planningMode == MedicalReportPlanningProperties.PlanningMode.LOCAL) {
+            return buildLocalFallback(latitude, longitude, effectiveIntent, "路线能力未启用", "route_disabled");
+        }
+
+        if (planningMode == MedicalReportPlanningProperties.PlanningMode.AGENTIC) {
             MedicalHospitalPlanningSummary agentSummary = medicalHospitalPlanningAgent
                     .plan(latitude, longitude, report, effectiveIntent, planningProperties.getMcp())
                     .orElse(null);
@@ -96,7 +101,8 @@ public class DefaultMedicalHospitalPlanningService implements MedicalHospitalPla
             }
         }
 
-        if (planningProperties.isMcpEnabled()) {
+        if (planningMode == MedicalReportPlanningProperties.PlanningMode.MCP
+                || planningMode == MedicalReportPlanningProperties.PlanningMode.AGENTIC) {
             MedicalHospitalPlanningSummary mcpSummary = medicalHospitalPlanningGateway
                     .plan(latitude, longitude, effectiveIntent, planningProperties.getMcp())
                     .orElse(null);
@@ -120,6 +126,22 @@ public class DefaultMedicalHospitalPlanningService implements MedicalHospitalPla
             );
         }
 
+        return buildLocalFallback(
+                latitude,
+                longitude,
+                effectiveIntent,
+                "MCP 路线服务暂不可用，已返回就近医院与距离",
+                "mcp_unavailable"
+        );
+    }
+
+    private MedicalHospitalPlanningSummary buildLocalFallback(
+            Double latitude,
+            Double longitude,
+            MedicalPlanningIntent effectiveIntent,
+            String routeStatusMessage,
+            String routeStatusCode
+    ) {
         List<MedicalHospitalRecommendation> recommendations = planningProperties.getFallback().getHospitals().stream()
                 .map(candidate -> toRecommendation(candidate, latitude, longitude))
                 .sorted(fallbackComparator(effectiveIntent))
@@ -130,27 +152,16 @@ public class DefaultMedicalHospitalPlanningService implements MedicalHospitalPla
             return new MedicalHospitalPlanningSummary(List.of(), false, "路线服务暂不可用，且暂无可用医院数据", "no_hospital_data");
         }
 
-        if (!planningProperties.isRoutePlanningEnabled() || planningProperties.isMcpEnabled()) {
-            List<MedicalHospitalRecommendation> noRouteRecommendations = recommendations.stream()
-                    .map(h -> new MedicalHospitalRecommendation(
-                            h.name(),
-                            h.address(),
-                            h.tier3a(),
-                            h.distanceMeters(),
-                            List.of()
-                    ))
-                    .toList();
-            return new MedicalHospitalPlanningSummary(
-                    noRouteRecommendations,
-                    false,
-                    planningProperties.isMcpEnabled()
-                            ? "MCP 路线服务暂不可用，已返回就近医院与距离"
-                            : "路线服务暂不可用，已返回就近医院与距离",
-                    planningProperties.isMcpEnabled() ? "mcp_unavailable" : "route_unavailable"
-            );
-        }
-
-        return new MedicalHospitalPlanningSummary(recommendations, true, "", "ok");
+        List<MedicalHospitalRecommendation> noRouteRecommendations = recommendations.stream()
+                .map(h -> new MedicalHospitalRecommendation(
+                        h.name(),
+                        h.address(),
+                        h.tier3a(),
+                        h.distanceMeters(),
+                        List.of()
+                ))
+                .toList();
+        return new MedicalHospitalPlanningSummary(noRouteRecommendations, false, routeStatusMessage, routeStatusCode);
     }
 
     private boolean isUsableAgentSummary(MedicalHospitalPlanningSummary summary) {
@@ -213,25 +224,12 @@ public class DefaultMedicalHospitalPlanningService implements MedicalHospitalPla
                 candidate.getLongitude()
         ));
 
-        List<MedicalHospitalRouteOption> routes = buildMockRoutes(distanceMeters);
         return new MedicalHospitalRecommendation(
                 sanitize(candidate.getName(), "未知医院"),
                 sanitize(candidate.getAddress(), ""),
                 candidate.isTier3a(),
                 Math.max(distanceMeters, 0L),
-                routes
-        );
-    }
-
-    private List<MedicalHospitalRouteOption> buildMockRoutes(long distanceMeters) {
-        long walkMinutes = Math.max(3, distanceMeters / 75);
-        long driveMinutes = Math.max(2, distanceMeters / 500);
-        long transitMinutes = Math.max(5, distanceMeters / 250);
-
-        return List.of(
-                new MedicalHospitalRouteOption("步行", distanceMeters, walkMinutes, "步行方案"),
-                new MedicalHospitalRouteOption("驾车", distanceMeters, driveMinutes, "驾车方案"),
-                new MedicalHospitalRouteOption("公交", distanceMeters, transitMinutes, "公交方案")
+                List.of()
         );
     }
 

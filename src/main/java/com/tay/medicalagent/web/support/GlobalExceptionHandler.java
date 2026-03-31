@@ -17,6 +17,8 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.util.DisconnectedClientHelper;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -31,6 +33,8 @@ import jakarta.servlet.http.HttpServletRequest;
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+    private static final DisconnectedClientHelper disconnectedClientHelper =
+            new DisconnectedClientHelper(GlobalExceptionHandler.class.getName());
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     @Hidden
@@ -126,9 +130,18 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.SERVICE_UNAVAILABLE, "模型服务网络异常，请稍后重试");
     }
 
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    @Hidden
+    public void handleAsyncRequestNotUsableException(AsyncRequestNotUsableException ex) {
+        disconnectedClientHelper.checkAndLogClientDisconnectedException(ex);
+    }
+
     @ExceptionHandler(Exception.class)
     @Hidden
     public ResponseEntity<ApiResponse<Void>> handleUnexpectedException(Exception ex) {
+        if (disconnectedClientHelper.checkAndLogClientDisconnectedException(ex)) {
+            return ResponseEntity.status(HttpStatus.NO_CONTENT).build();
+        }
         log.error("Unexpected request failure. request={}", currentRequestSummary(), ex);
         return build(HttpStatus.INTERNAL_SERVER_ERROR, "系统内部错误");
     }

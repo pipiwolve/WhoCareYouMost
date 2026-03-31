@@ -125,6 +125,7 @@ public class DefaultMedicalHospitalPlanningAgent implements MedicalHospitalPlann
             BeanOutputConverter<MedicalHospitalPlanningSummary> outputConverter
     ) {
         String coordinate = formatCoordinate(longitude, latitude);
+        String fallbackOrder = describeFallbackOrder(planningIntent);
         return """
                 请使用地图工具为用户规划附近医院与路线，并严格返回 JSON。
 
@@ -140,6 +141,7 @@ public class DefaultMedicalHospitalPlanningAgent implements MedicalHospitalPlann
                 搜索半径 radius：%s
                 返回数量 topK：%s
                 是否优先三甲：%s
+                后端放宽顺序：%s
 
                 输出要求：
                 1. 如果路线工具可用，尽量返回步行、驾车、公交三种路线。
@@ -148,7 +150,9 @@ public class DefaultMedicalHospitalPlanningAgent implements MedicalHospitalPlann
                 4. routeStatusMessage 在 statusCode=ok 时返回空字符串。
                 5. hospitals 按优先级排序，最多 topK 家。
                 6. 每条 routes 元素除了 summary，还要尽量返回 steps 数组；步行/驾车按路线步骤拆分，公交按“步行 -> 地铁/公交 -> 步行/换乘”高层步骤拆分。
-                7. 如果第一次附近医院检索为空，不要立刻返回空结果；请保持坐标不变，按“专科别名 -> 三甲医院 -> 医院”的顺序逐步放宽关键词，并把半径逐步放宽到 12000~15000 米后再下结论。
+                7. 首轮附近医院检索必须使用上面的原始 keywords/types/radius/topK，不要提前放宽。
+                8. 如果第一次附近医院检索为空，不要立刻返回空结果；请保持坐标不变，只能按上面的“后端放宽顺序”逐步放宽关键词，并仅在后端顺序允许时逐步放宽到更大的半径后再下结论。
+                9. 每次调用工具前都要检查 MCP tool schema，只能传入 schema 已声明的字段；不要传 schema 未声明参数。
 
                 %s
                 """.formatted(
@@ -163,8 +167,36 @@ public class DefaultMedicalHospitalPlanningAgent implements MedicalHospitalPlann
                 planningIntent.aroundRadiusMeters(),
                 planningIntent.topK(),
                 planningIntent.preferTier3a(),
+                fallbackOrder,
                 outputConverter.getFormat()
         );
+    }
+
+    private String describeFallbackOrder(MedicalPlanningIntent planningIntent) {
+        return String.join(" -> ", resolveFallbackKeywords(planningIntent));
+    }
+
+    private List<String> resolveFallbackKeywords(MedicalPlanningIntent planningIntent) {
+        String profileId = safeText(planningIntent == null ? null : planningIntent.profileId()).toLowerCase(Locale.ROOT);
+        List<String> keywords = switch (profileId) {
+            case "emergency" -> List.of("急诊科", "急救中心", "医院");
+            case "cardiac" -> List.of("心血管内科", "心内科", "胸痛中心", "医院");
+            case "respiratory" -> List.of("呼吸内科", "发热门诊", "医院");
+            case "neurology" -> List.of("神经内科", "卒中中心", "医院");
+            case "pediatric" -> List.of("儿科医院", "儿童医院", "医院");
+            case "obstetric" -> List.of("妇产科医院", "妇幼保健院", "医院");
+            case "orthopedic" -> List.of("骨科", "创伤中心", "综合医院", "医院");
+            case "dental" -> List.of("口腔科", "综合医院", "医院");
+            case "psychiatry" -> List.of("精神科医院", "综合医院", "医院");
+            default -> List.of("三甲医院", "综合医院", "医院");
+        };
+        if (planningIntent != null && planningIntent.preferTier3a() && !keywords.contains("三甲医院")) {
+            List<String> preferredKeywords = new java.util.ArrayList<>(keywords);
+            int insertIndex = Math.max(0, preferredKeywords.size() - 1);
+            preferredKeywords.add(insertIndex, "三甲医院");
+            return List.copyOf(preferredKeywords);
+        }
+        return keywords;
     }
 
     private List<MedicalHospitalRecommendation> safeHospitals(

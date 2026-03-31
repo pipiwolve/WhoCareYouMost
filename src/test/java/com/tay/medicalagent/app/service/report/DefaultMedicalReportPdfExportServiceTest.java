@@ -1,16 +1,9 @@
 package com.tay.medicalagent.app.service.report;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
 import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalReportPdfFile;
-import com.tay.medicalagent.app.service.model.MedicalAiModelProvider;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.prompt.Prompt;
 
 import java.util.List;
 
@@ -24,20 +17,13 @@ import static org.mockito.Mockito.when;
 class DefaultMedicalReportPdfExportServiceTest {
 
     @Test
-    void exportServiceShouldInvokeToolPathAndReturnPdfFile() {
-        MedicalAiModelProvider provider = mock(MedicalAiModelProvider.class);
+    void exportServiceShouldRenderPdfDeterministically() {
         MedicalReportPdfRenderer renderer = mock(MedicalReportPdfRenderer.class);
-        MedicalReportPdfToolFactory toolFactory = new MedicalReportPdfToolFactory(renderer);
-        when(provider.getChatModel()).thenReturn(new ToolCallingStubChatModel());
 
         byte[] pdfBytes = "%PDF-service-test".getBytes();
         when(renderer.render(org.mockito.ArgumentMatchers.any())).thenReturn(pdfBytes);
 
-        DefaultMedicalReportPdfExportService service = new DefaultMedicalReportPdfExportService(
-                provider,
-                toolFactory,
-                new ObjectMapper()
-        );
+        DefaultMedicalReportPdfExportService service = new DefaultMedicalReportPdfExportService(renderer);
 
         MedicalReportPdfFile pdfFile = service.exportReportPdf(
                 "sess_export",
@@ -67,13 +53,8 @@ class DefaultMedicalReportPdfExportServiceTest {
 
     @Test
     void exportServiceShouldRejectUnavailableReport() {
-        MedicalAiModelProvider provider = mock(MedicalAiModelProvider.class);
         MedicalReportPdfRenderer renderer = mock(MedicalReportPdfRenderer.class);
-        DefaultMedicalReportPdfExportService service = new DefaultMedicalReportPdfExportService(
-                provider,
-                new MedicalReportPdfToolFactory(renderer),
-                new ObjectMapper()
-        );
+        DefaultMedicalReportPdfExportService service = new DefaultMedicalReportPdfExportService(renderer);
 
         assertThrows(ReportNotExportableException.class, () -> service.exportReportPdf(
                 "sess_export",
@@ -94,22 +75,5 @@ class DefaultMedicalReportPdfExportServiceTest {
                 ),
                 MedicalHospitalPlanningSummary.empty()
         ));
-    }
-
-    private static final class ToolCallingStubChatModel implements ChatModel {
-
-        @Override
-        public ChatResponse call(Prompt prompt) {
-            AssistantMessage assistantMessage = AssistantMessage.builder()
-                    .content("")
-                    .toolCalls(List.of(new AssistantMessage.ToolCall(
-                            "call_export_1",
-                            "function",
-                            MedicalReportPdfExportConstants.EXPORT_TOOL_NAME,
-                            "{\"purpose\":\"export_current_report\"}"
-                    )))
-                    .build();
-            return new ChatResponse(List.of(new Generation(assistantMessage)));
-        }
     }
 }

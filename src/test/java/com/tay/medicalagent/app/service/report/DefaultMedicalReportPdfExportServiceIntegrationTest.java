@@ -1,39 +1,24 @@
 package com.tay.medicalagent.app.service.report;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lowagie.text.pdf.PdfReader;
 import com.lowagie.text.pdf.parser.PdfTextExtractor;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
 import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalReportPdfFile;
-import com.tay.medicalagent.app.service.model.MedicalAiModelProvider;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.prompt.Prompt;
 
 import java.io.IOException;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 class DefaultMedicalReportPdfExportServiceIntegrationTest {
 
     @Test
-    void exportServiceShouldGenerateRealPdfThroughToolCallingPath() throws Exception {
-        MedicalAiModelProvider provider = mock(MedicalAiModelProvider.class);
-        when(provider.getChatModel()).thenReturn(new ToolCallingStubChatModel());
-
-        DefaultMedicalReportPdfExportService service = new DefaultMedicalReportPdfExportService(
-                provider,
-                new MedicalReportPdfToolFactory(new MedicalReportPdfRenderer("")),
-                new ObjectMapper()
-        );
+    void exportServiceShouldGenerateRealPdfThroughLocalRendererPath() throws Exception {
+        DefaultMedicalReportPdfExportService service =
+                new DefaultMedicalReportPdfExportService(new MedicalReportPdfRenderer(""));
 
         MedicalReportPdfFile pdfFile = service.exportReportPdf(
                 "sess_integration",
@@ -77,20 +62,4 @@ class DefaultMedicalReportPdfExportServiceIntegrationTest {
         return builder.toString();
     }
 
-    private static final class ToolCallingStubChatModel implements ChatModel {
-
-        @Override
-        public ChatResponse call(Prompt prompt) {
-            AssistantMessage assistantMessage = AssistantMessage.builder()
-                    .content("")
-                    .toolCalls(List.of(new AssistantMessage.ToolCall(
-                            "call_export_integration",
-                            "function",
-                            MedicalReportPdfExportConstants.EXPORT_TOOL_NAME,
-                            "{\"purpose\":\"export_current_report\"}"
-                    )))
-                    .build();
-            return new ChatResponse(List.of(new Generation(assistantMessage)));
-        }
-    }
 }

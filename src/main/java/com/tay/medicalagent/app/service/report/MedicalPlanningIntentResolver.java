@@ -12,6 +12,8 @@ public interface MedicalPlanningIntentResolver {
 
     boolean shouldPrepareChatPreview(String latestUserMessage, MedicalChatResult medicalChatResult);
 
+    boolean isExplicitHospitalRequest(String latestUserMessage);
+
     MedicalPlanningIntent resolve(
             MedicalDiagnosisReport report,
             StructuredMedicalReply structuredMedicalReply,

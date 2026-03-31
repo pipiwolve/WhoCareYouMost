@@ -46,9 +46,10 @@ class MedicalReportPdfRendererTest {
                     "补液休息",
                     "升级就医信号",
                     "持续高热",
-                        "就近医院与路线规划",
-                        "复旦大学附属华山医院",
-                        "步行",
+                    "就近医院与路线规划",
+                    "复旦大学附属华山医院",
+                    "步行",
+                    "步行 200 米前往医院门诊入口",
                     "免责声明",
                     "本报告由AI生成，仅供参考，不能替代专业医生诊断。"
             );
@@ -83,9 +84,9 @@ class MedicalReportPdfRendererTest {
                             true,
                             1800,
                             List.of(
-                                new MedicalHospitalRouteOption("WALK", 1800, 24, "步行方案"),
-                                new MedicalHospitalRouteOption("DRIVE", 1800, 5, "驾车方案"),
-                                new MedicalHospitalRouteOption("TRANSIT", 1800, 12, "公交方案")
+                                new MedicalHospitalRouteOption("WALK", 1800, 24, "步行方案", List.of("步行 200 米前往医院门诊入口")),
+                                new MedicalHospitalRouteOption("DRIVE", 1800, 5, "驾车方案", List.of("沿延安中路行驶后抵达医院")),
+                                new MedicalHospitalRouteOption("TRANSIT", 1800, 12, "公交方案", List.of("步行至地铁站后换乘到医院"))
                             )
                         )),
                         true,

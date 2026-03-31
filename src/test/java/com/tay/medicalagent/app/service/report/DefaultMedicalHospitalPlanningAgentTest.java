@@ -55,6 +55,8 @@ class DefaultMedicalHospitalPlanningAgentTest {
         assertTrue(prompt.contains("用户坐标 location：121.4737,31.2304"));
         assertTrue(prompt.contains("例如 `121.4737,31.2304`"));
         assertTrue(prompt.contains("绝不能写成“纬度,经度”"));
+        assertTrue(prompt.contains("后端放宽顺序：急诊科 -> 急救中心 -> 三甲医院 -> 医院"));
+        assertTrue(prompt.contains("只能传入 schema 已声明的字段"));
         assertFalse(prompt.contains("用户坐标 location：31.2304,121.4737"));
     }
 }

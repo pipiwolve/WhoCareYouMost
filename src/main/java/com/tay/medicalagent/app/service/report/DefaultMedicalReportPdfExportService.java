@@ -1,25 +1,14 @@
 package com.tay.medicalagent.app.service.report;
 
-import com.alibaba.cloud.ai.graph.RunnableConfig;
-import com.alibaba.cloud.ai.graph.agent.ReactAgent;
-import com.alibaba.cloud.ai.graph.agent.hook.returndirect.ReturnDirectModelHook;
-import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tay.medicalagent.app.prompt.MedicalPrompts;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
 import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalReportPdfFile;
 import com.tay.medicalagent.app.report.MedicalReportPdfPayload;
-import com.tay.medicalagent.app.report.MedicalReportPdfToolResult;
-import com.tay.medicalagent.app.service.model.MedicalAiModelProvider;
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 
 import java.time.OffsetDateTime;
-import java.util.Base64;
-import java.util.Map;
 
 /**
  * 默认医疗报告 PDF 导出服务。
@@ -27,20 +16,12 @@ import java.util.Map;
 @Service
 public class DefaultMedicalReportPdfExportService implements MedicalReportPdfExportService {
 
-    private static final String EXPORT_PROMPT = "请导出当前医疗诊断报告为 PDF。";
-
-    private final MedicalAiModelProvider medicalAiModelProvider;
-    private final MedicalReportPdfToolFactory medicalReportPdfToolFactory;
-    private final ObjectMapper objectMapper;
+    private final MedicalReportPdfRenderer medicalReportPdfRenderer;
 
     public DefaultMedicalReportPdfExportService(
-            MedicalAiModelProvider medicalAiModelProvider,
-            MedicalReportPdfToolFactory medicalReportPdfToolFactory,
-            ObjectMapper objectMapper
+            MedicalReportPdfRenderer medicalReportPdfRenderer
     ) {
-        this.medicalAiModelProvider = medicalAiModelProvider;
-        this.medicalReportPdfToolFactory = medicalReportPdfToolFactory;
-        this.objectMapper = objectMapper;
+        this.medicalReportPdfRenderer = medicalReportPdfRenderer;
     }
 
     @Override
@@ -67,30 +48,11 @@ public class DefaultMedicalReportPdfExportService implements MedicalReportPdfExp
         );
 
         try {
-            ReactAgent exportAgent = ReactAgent.builder()
-                    .name("medical_report_export_agent")
-                    .model(medicalAiModelProvider.getChatModel())
-                    .systemPrompt(MedicalPrompts.REPORT_PDF_EXPORT_AGENT_PROMPT)
-                    .tools(medicalReportPdfToolFactory.createToolCallback())
-                    .toolContext(Map.of(MedicalReportPdfExportConstants.REPORT_PAYLOAD_CONTEXT_KEY, payload))
-                    .hooks(new ReturnDirectModelHook())
-                    .saver(new MemorySaver())
-                    .build();
-
-            AssistantMessage assistantMessage = exportAgent.call(
-                    EXPORT_PROMPT,
-                    buildRunnableConfig(payload)
-            );
-            MedicalReportPdfToolResult toolResult = parseToolResult(assistantMessage.getText());
-            byte[] content = Base64.getDecoder().decode(toolResult.base64Content());
+            byte[] content = medicalReportPdfRenderer.render(payload);
             if (content.length == 0) {
                 throw new ReportExportException("报告导出失败");
             }
-            return new MedicalReportPdfFile(
-                    normalizeText(toolResult.fileName(), payload.fileName()),
-                    normalizeText(toolResult.contentType(), MediaType.APPLICATION_PDF_VALUE),
-                    content
-            );
+            return new MedicalReportPdfFile(payload.fileName(), MediaType.APPLICATION_PDF_VALUE, content);
         }
         catch (ReportNotExportableException ex) {
             throw ex;
@@ -98,23 +60,6 @@ public class DefaultMedicalReportPdfExportService implements MedicalReportPdfExp
         catch (Exception ex) {
             throw new ReportExportException("报告导出失败", ex);
         }
-    }
-
-    private RunnableConfig buildRunnableConfig(MedicalReportPdfPayload payload) throws JsonProcessingException {
-        return RunnableConfig.builder()
-                .threadId(payload.threadId() + "-pdf-export")
-                .addMetadata("session_id", payload.sessionId())
-                .addMetadata("thread_id", payload.threadId())
-                .addMetadata("user_id", payload.userId())
-                .addMetadata("report_json", objectMapper.writeValueAsString(payload.report()))
-                .build();
-    }
-
-    private MedicalReportPdfToolResult parseToolResult(String payloadText) throws JsonProcessingException {
-        if (payloadText == null || payloadText.isBlank()) {
-            throw new ReportExportException("报告导出失败");
-        }
-        return objectMapper.readValue(payloadText, MedicalReportPdfToolResult.class);
     }
 
     private String normalizeSessionId(String sessionId) {
