@@ -2,6 +2,7 @@ package com.tay.medicalagent.app.service.report;
 
 import com.tay.medicalagent.app.report.MedicalReportSnapshot;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Repository;
 
 import java.time.Clock;
@@ -16,6 +17,7 @@ import java.util.concurrent.ConcurrentMap;
  * 冻结报告快照的内存实现。
  */
 @Repository
+@ConditionalOnProperty(prefix = "medical.persistence", name = "store", havingValue = "memory", matchIfMissing = true)
 public class InMemoryMedicalReportSnapshotRepository implements MedicalReportSnapshotRepository {
 
     private final ConcurrentMap<String, SnapshotEntry> snapshots = new ConcurrentHashMap<>();

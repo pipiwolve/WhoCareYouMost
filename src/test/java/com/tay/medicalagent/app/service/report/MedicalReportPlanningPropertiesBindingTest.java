@@ -22,10 +22,25 @@ class MedicalReportPlanningPropertiesBindingTest {
                 .bind("medical.report.planning", Bindable.of(MedicalReportPlanningProperties.class))
                 .orElseThrow(() -> new IllegalStateException("medical.report.planning binding failed"));
 
-        assertEquals("mcp", properties.getMode());
+        assertEquals("", properties.getMode());
+        assertEquals("prod", properties.getEnvironment());
         assertEquals(MedicalReportPlanningProperties.PlanningMode.MCP, properties.getResolvedMode());
         assertTrue(properties.isMcpEnabled());
         assertEquals(false, properties.isAgentEnabled());
+    }
+
+    @Test
+    void shouldResolveEnvironmentDrivenModesWhenModeIsBlank() {
+        Binder binder = new Binder(new MapConfigurationPropertySource(Map.of(
+                "medical.report.planning.enabled", "true",
+                "medical.report.planning.environment", "local"
+        )));
+
+        MedicalReportPlanningProperties properties = binder
+                .bind("medical.report.planning", Bindable.of(MedicalReportPlanningProperties.class))
+                .orElseThrow(() -> new IllegalStateException("medical.report.planning binding failed"));
+
+        assertEquals(MedicalReportPlanningProperties.PlanningMode.LOCAL, properties.getResolvedMode());
     }
 
     @Test

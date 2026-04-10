@@ -3,6 +3,8 @@ package com.tay.medicalagent.controller.v1;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.tay.medicalagent.app.MedicalApp;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
+import com.tay.medicalagent.app.chat.MedicalChatStreamingSession;
+import com.tay.medicalagent.app.report.MedicalReportContextSnapshot;
 import com.tay.medicalagent.app.report.MedicalReportSnapshot;
 import com.tay.medicalagent.app.service.chat.MedicalChatPreviewReplyDecorator;
 import com.tay.medicalagent.app.service.model.MedicalModelConfigurationException;
@@ -27,11 +29,11 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.Executor;
 
 @RestController
@@ -44,7 +46,6 @@ import java.util.concurrent.Executor;
 public class ChatController {
 
     private static final Logger log = LoggerFactory.getLogger(ChatController.class);
-    private static final int MAX_CHUNK_LENGTH = 12;
 
     private final MedicalApp medicalApp;
     private final ConsultationSessionService consultationSessionService;
@@ -77,9 +78,9 @@ public class ChatController {
                 consultationSession.threadId(),
                 consultationSession.userId()
         );
-        ChatPreviewResolution previewResolution = resolveChatPreview(consultationSession, trimmedMessage, medicalChatResult);
+        ChatPreviewResolution previewResolution = resolveChatPreview(request.sessionId(), trimmedMessage, medicalChatResult);
         if (!previewResolution.inlinePreviewApplied()) {
-            prepareReportPreviewAsync(consultationSession, trimmedMessage, medicalChatResult);
+            warmUpFinalReportAsync(request.sessionId(), trimmedMessage, medicalChatResult);
         }
         return ApiResponse.success(medicalApiViewMapper.toChatCompletionResponse(
                 consultationSession.sessionId(),
@@ -107,19 +108,23 @@ public class ChatController {
             validateAttachments(request.attachments());
             ConsultationSession consultationSession = consultationSessionService.getRequiredSession(request.sessionId());
             String trimmedMessage = request.message().trim();
-            MedicalChatResult medicalChatResult = medicalApp.doChat(
+            MedicalChatStreamingSession streamingSession = medicalApp.streamChat(
                     trimmedMessage,
                     consultationSession.threadId(),
                     consultationSession.userId()
             );
-            long chatReadyAt = System.nanoTime();
+            AtomicInteger chunkIndex = new AtomicInteger();
+            MedicalChatResult medicalChatResult = streamingSession.deltas()
+                    .doOnNext(delta -> sendChunkOrAbort(sink, chunkIndex.getAndIncrement(), delta))
+                    .then(streamingSession.finalResult())
+                    .block();
+            long streamFinishedAt = System.nanoTime();
 
-            if (!emitReplyChunks(sink, medicalChatResult.reply())) {
+            if (medicalChatResult == null) {
                 return;
             }
-            long chunksEmittedAt = System.nanoTime();
 
-            ChatPreviewResolution previewResolution = resolveChatPreview(consultationSession, trimmedMessage, medicalChatResult);
+            ChatPreviewResolution previewResolution = resolveChatPreview(request.sessionId(), trimmedMessage, medicalChatResult);
             ChatCompletionResponse response = medicalApiViewMapper.toChatCompletionResponse(
                     consultationSession.sessionId(),
                     previewResolution.chatResult(),
@@ -131,19 +136,22 @@ public class ChatController {
             }
 
             if (!previewResolution.inlinePreviewApplied()) {
-                prepareReportPreviewAsync(consultationSession, trimmedMessage, medicalChatResult);
+                warmUpFinalReportAsync(request.sessionId(), trimmedMessage, medicalChatResult);
             }
             long finishedAt = System.nanoTime();
             if (log.isDebugEnabled()) {
                 log.debug(
-                        "SSE chat finished. sessionId={}, chatReadyMs={}, chunkEmitMs={}, totalMs={}",
+                        "SSE chat finished. sessionId={}, streamMs={}, doneAssembleMs={}, totalMs={}",
                         consultationSession.sessionId(),
-                        elapsedMillis(startedAt, chatReadyAt),
-                        elapsedMillis(chatReadyAt, chunksEmittedAt),
+                        elapsedMillis(startedAt, streamFinishedAt),
+                        elapsedMillis(streamFinishedAt, finishedAt),
                         elapsedMillis(startedAt, finishedAt)
                 );
             }
             sink.complete();
+        }
+        catch (SseDeliveryAbortedException ex) {
+            log.debug("SSE stream stopped because connection is no longer writable. reason={}", ex.getMessage());
         }
         catch (Exception ex) {
             if (sink.send("error", buildErrorPayload(ex))) {
@@ -200,68 +208,89 @@ public class ChatController {
         return "系统内部错误";
     }
 
-    private boolean emitReplyChunks(ChatSseSink sink, String reply) {
-        List<String> chunks = splitText(reply);
-        for (int index = 0; index < chunks.size(); index++) {
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("delta", chunks.get(index));
-            payload.put("index", index);
-            if (!sink.send("chunk", payload)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private void prepareReportPreviewAsync(
-            ConsultationSession consultationSession,
+    private void warmUpFinalReportAsync(
+            String sessionId,
             String prompt,
             MedicalChatResult medicalChatResult
     ) {
-        if (consultationSession == null || medicalChatResult == null) {
+        if (sessionId == null || sessionId.isBlank() || medicalChatResult == null) {
             return;
         }
+        ReportPreviewAsyncTask task = createReportPreviewAsyncTask(sessionId, prompt, medicalChatResult);
         medicalSseExecutor.execute(() -> {
             try {
-                medicalApp.prepareReportPreview(
-                        consultationSession.sessionId(),
-                        prompt,
-                        consultationSession.threadId(),
-                        consultationSession.userId(),
-                        consultationSession.latitude(),
-                        consultationSession.longitude(),
-                        medicalChatResult
+                ConsultationSession latestSession = consultationSessionService.getRequiredSession(task.sessionId());
+                MedicalReportContextSnapshot currentContext = medicalApp.captureReportPreviewContext(
+                        latestSession.threadId(),
+                        latestSession.userId(),
+                        latestSession.latitude(),
+                        latestSession.longitude()
+                );
+                if (task.dispatchContext() != null
+                        && currentContext != null
+                        && !task.dispatchContext().matchesReportInputs(currentContext)) {
+                    log.debug(
+                            "Report preview warm-up dropped because chat context changed. sessionId={}, locationChanged={}",
+                            task.sessionId(),
+                            !task.dispatchContext().matchesLocation(currentContext)
+                    );
+                    return;
+                }
+                medicalApp.warmUpFinalReport(
+                        task.sessionId(),
+                        task.prompt(),
+                        latestSession.threadId(),
+                        latestSession.userId(),
+                        latestSession.latitude(),
+                        latestSession.longitude(),
+                        task.medicalChatResult()
                 );
             }
             catch (Exception ex) {
                 log.debug(
                         "Report preview warm-up skipped. sessionId={}, reason={}",
-                        consultationSession.sessionId(),
+                        task.sessionId(),
                         ex.getMessage()
                 );
             }
         });
     }
 
-    private ChatPreviewResolution resolveChatPreview(
-            ConsultationSession consultationSession,
+    private ReportPreviewAsyncTask createReportPreviewAsyncTask(
+            String sessionId,
             String prompt,
             MedicalChatResult medicalChatResult
     ) {
-        if (consultationSession == null || medicalChatResult == null) {
+        ConsultationSession latestSession = consultationSessionService.getRequiredSession(sessionId);
+        MedicalReportContextSnapshot dispatchContext = medicalApp.captureReportPreviewContext(
+                latestSession.threadId(),
+                latestSession.userId(),
+                latestSession.latitude(),
+                latestSession.longitude()
+        );
+        return new ReportPreviewAsyncTask(latestSession.sessionId(), prompt, medicalChatResult, dispatchContext);
+    }
+
+    private ChatPreviewResolution resolveChatPreview(
+            String sessionId,
+            String prompt,
+            MedicalChatResult medicalChatResult
+    ) {
+        if (sessionId == null || sessionId.isBlank() || medicalChatResult == null) {
             return new ChatPreviewResolution(medicalChatResult, null, false);
         }
         if (!medicalApp.isExplicitHospitalPlanningRequest(prompt)) {
             return new ChatPreviewResolution(medicalChatResult, null, false);
         }
 
+        ConsultationSession latestSession = consultationSessionService.getRequiredSession(sessionId);
         MedicalReportSnapshot reportPreview = medicalApp.prepareReportPreview(
-                consultationSession.sessionId(),
+                latestSession.sessionId(),
                 prompt,
-                consultationSession.threadId(),
-                consultationSession.userId(),
-                consultationSession.latitude(),
-                consultationSession.longitude(),
+                latestSession.threadId(),
+                latestSession.userId(),
+                latestSession.latitude(),
+                latestSession.longitude(),
                 medicalChatResult
         ).orElse(null);
         String decoratedReply = medicalChatPreviewReplyDecorator.decorateExplicitHospitalRequestReply(
@@ -315,33 +344,13 @@ public class ChatController {
         return Math.max(0L, (endNanos - startNanos) / 1_000_000L);
     }
 
-    private List<String> splitText(String text) {
-        if (text == null || text.isBlank()) {
-            return List.of();
+    private void sendChunkOrAbort(ChatSseSink sink, int index, String delta) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("delta", delta);
+        payload.put("index", index);
+        if (!sink.send("chunk", payload)) {
+            throw new SseDeliveryAbortedException("chunk");
         }
-
-        List<String> chunks = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        for (int index = 0; index < text.length(); index++) {
-            char character = text.charAt(index);
-            current.append(character);
-            if (isBoundary(character) || current.length() >= MAX_CHUNK_LENGTH) {
-                chunks.add(current.toString());
-                current.setLength(0);
-            }
-        }
-
-        if (!current.isEmpty()) {
-            chunks.add(current.toString());
-        }
-        return chunks;
-    }
-
-    private boolean isBoundary(char character) {
-        return switch (character) {
-            case '，', '。', '！', '？', '；', '：', ',', '.', '!', '?', ';', ':', '\n' -> true;
-            default -> false;
-        };
     }
 
     interface ChatSseSink {
@@ -349,6 +358,14 @@ public class ChatController {
         boolean send(String eventName, Object payload);
 
         void complete();
+    }
+
+    private record ReportPreviewAsyncTask(
+            String sessionId,
+            String prompt,
+            MedicalChatResult medicalChatResult,
+            MedicalReportContextSnapshot dispatchContext
+    ) {
     }
 
     private final class SseEmitterChatSseSink implements ChatSseSink {
@@ -388,5 +405,12 @@ public class ChatController {
             MedicalReportSnapshot reportPreview,
             boolean inlinePreviewApplied
     ) {
+    }
+
+    private static final class SseDeliveryAbortedException extends RuntimeException {
+
+        private SseDeliveryAbortedException(String stage) {
+            super(stage);
+        }
     }
 }

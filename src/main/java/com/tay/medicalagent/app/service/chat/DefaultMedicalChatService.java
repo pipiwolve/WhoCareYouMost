@@ -2,6 +2,7 @@ package com.tay.medicalagent.app.service.chat;
 
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
+import com.tay.medicalagent.app.chat.MedicalChatStreamingSession;
 import com.tay.medicalagent.app.chat.NormalizedMedicalReply;
 import com.tay.medicalagent.app.chat.StructuredMedicalReply;
 import com.tay.medicalagent.app.rag.model.RagContext;
@@ -15,10 +16,14 @@ import com.tay.medicalagent.app.service.report.MedicalReportTriggerPolicy;
 import com.tay.medicalagent.app.service.report.ReportTriggerDecision;
 import com.tay.medicalagent.app.service.report.ReportTriggerLevel;
 import com.tay.medicalagent.app.service.runtime.MedicalAgentRuntime;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.util.List;
 
@@ -30,6 +35,7 @@ import java.util.List;
  */
 public class DefaultMedicalChatService implements MedicalChatService {
 
+    private static final Logger log = LoggerFactory.getLogger(DefaultMedicalChatService.class);
     private static final String REPORT_REQUEST_REPLY = "已根据当前线程对话生成医疗诊断报告。";
     private static final String NO_REPORT_CONTEXT_REPLY = "当前线程暂无足够对话内容，无法生成诊断报告。";
     private static final String EXPLICIT_HOSPITAL_ROUTE_ACTION_TEXT = "已按您的请求准备附近医院路线，可查看详情。";
@@ -65,46 +71,53 @@ public class DefaultMedicalChatService implements MedicalChatService {
 
     @Override
     public MedicalChatResult doChat(String prompt, String threadId, String userId) throws GraphRunnerException {
+        long startedAt = System.nanoTime();
         String effectiveThreadId = normalizeThreadId(threadId);
         String effectiveUserId = userProfileService.normalizeUserId(userId);
 
         if (medicalReportService.isReportRequest(prompt)) {
-            return buildReportResult(effectiveThreadId, effectiveUserId);
+            MedicalChatResult reportResult = buildReportResult(effectiveThreadId, effectiveUserId);
+            logChatCompletion(prompt, reportResult, startedAt, startedAt);
+            return reportResult;
         }
 
+        long modelStartedAt = System.nanoTime();
         AssistantMessage assistantMessage = medicalAgentRuntime.doChatMessage(prompt, effectiveThreadId, effectiveUserId);
-        NormalizedMedicalReply normalizedReply = medicalReplyFormatter.normalize(assistantMessage.getText());
-        AssistantMessage normalizedAssistantMessage = AssistantMessage.builder()
-                .content(normalizedReply.reply())
-                .properties(assistantMessage.getMetadata())
-                .toolCalls(assistantMessage.getToolCalls())
-                .media(assistantMessage.getMedia())
-                .build();
-        threadConversationService.appendExchange(effectiveThreadId, new UserMessage(prompt), normalizedAssistantMessage);
-        List<Message> conversation = threadConversationService.getThreadConversation(effectiveThreadId);
-        RagContext ragContext = medicalRagContextHolder.get(effectiveThreadId).orElse(RagContext.empty(prompt));
-        ReportTriggerDecision triggerDecision = medicalReportTriggerPolicy.evaluate(
-                normalizedReply.structuredReply(),
-                normalizedReply.reply(),
-                conversation
-        );
-        ReportTriggerDecision effectiveTriggerDecision = medicalPlanningIntentResolver.isExplicitHospitalRequest(prompt)
-                ? new ReportTriggerDecision(ReportTriggerLevel.RECOMMENDED, EXPLICIT_HOSPITAL_ROUTE_ACTION_TEXT)
-                : triggerDecision;
-        return new MedicalChatResult(
-                effectiveThreadId,
-                effectiveUserId,
-                normalizedReply.reply(),
-                effectiveTriggerDecision.reportAvailable(),
-                effectiveTriggerDecision.reportReason(),
-                effectiveTriggerDecision.level(),
-                effectiveTriggerDecision.actionText(),
-                false,
-                null,
-                ragContext.applied(),
-                ragContext.sources(),
-                normalizedReply.structuredReply()
-        );
+        MedicalChatResult result = buildChatResult(prompt, effectiveThreadId, effectiveUserId, assistantMessage.getText());
+        logChatCompletion(prompt, result, startedAt, modelStartedAt);
+        return result;
+    }
+
+    @Override
+    public MedicalChatStreamingSession streamChat(String prompt, String threadId, String userId) throws GraphRunnerException {
+        long startedAt = System.nanoTime();
+        String effectiveThreadId = normalizeThreadId(threadId);
+        String effectiveUserId = userProfileService.normalizeUserId(userId);
+
+        if (medicalReportService.isReportRequest(prompt)) {
+            MedicalChatResult reportResult = buildReportResult(effectiveThreadId, effectiveUserId);
+            Flux<String> syntheticReply = reportResult.reply() == null || reportResult.reply().isBlank()
+                    ? Flux.empty()
+                    : Flux.just(reportResult.reply());
+            logChatCompletion(prompt, reportResult, startedAt, startedAt);
+            return new MedicalChatStreamingSession(syntheticReply, Mono.just(reportResult));
+        }
+
+        long modelStartedAt = System.nanoTime();
+        Flux<String> sharedDeltas = medicalAgentRuntime.streamChatText(prompt, effectiveThreadId, effectiveUserId)
+                .filter(delta -> delta != null && !delta.isBlank())
+                .replay()
+                .autoConnect(1);
+
+        Mono<MedicalChatResult> finalResult = sharedDeltas
+                .collect(StringBuilder::new, StringBuilder::append)
+                .map(StringBuilder::toString)
+                .defaultIfEmpty("")
+                .map(reply -> buildChatResult(prompt, effectiveThreadId, effectiveUserId, reply))
+                .doOnSuccess(result -> logChatCompletion(prompt, result, startedAt, modelStartedAt))
+                .cache();
+
+        return new MedicalChatStreamingSession(sharedDeltas, finalResult);
     }
 
     @Override
@@ -139,6 +152,63 @@ public class DefaultMedicalChatService implements MedicalChatService {
     @Override
     public void resetRuntime() {
         medicalAgentRuntime.reset();
+    }
+
+    private MedicalChatResult buildChatResult(
+            String prompt,
+            String threadId,
+            String userId,
+            String rawReply
+    ) {
+        NormalizedMedicalReply normalizedReply = medicalReplyFormatter.normalize(rawReply);
+        AssistantMessage normalizedAssistantMessage = AssistantMessage.builder()
+                .content(normalizedReply.reply())
+                .build();
+        threadConversationService.appendExchange(threadId, new UserMessage(prompt), normalizedAssistantMessage);
+        List<Message> conversation = threadConversationService.getThreadConversation(threadId);
+        RagContext ragContext = medicalRagContextHolder.get(threadId).orElse(RagContext.empty(prompt));
+        ReportTriggerDecision triggerDecision = medicalReportTriggerPolicy.evaluate(
+                normalizedReply.structuredReply(),
+                normalizedReply.reply(),
+                conversation
+        );
+        ReportTriggerDecision effectiveTriggerDecision = medicalPlanningIntentResolver.isExplicitHospitalRequest(prompt)
+                ? new ReportTriggerDecision(ReportTriggerLevel.RECOMMENDED, EXPLICIT_HOSPITAL_ROUTE_ACTION_TEXT)
+                : triggerDecision;
+        return new MedicalChatResult(
+                threadId,
+                userId,
+                normalizedReply.reply(),
+                effectiveTriggerDecision.reportAvailable(),
+                effectiveTriggerDecision.reportReason(),
+                effectiveTriggerDecision.level(),
+                effectiveTriggerDecision.actionText(),
+                false,
+                null,
+                ragContext.applied(),
+                ragContext.sources(),
+                normalizedReply.structuredReply()
+        );
+    }
+
+    private void logChatCompletion(
+            String prompt,
+            MedicalChatResult medicalChatResult,
+            long startedAt,
+            long modelStartedAt
+    ) {
+        long finishedAt = System.nanoTime();
+        boolean explicitHospitalRequest = medicalPlanningIntentResolver.isExplicitHospitalRequest(prompt);
+        log.info(
+                "Medical chat completed. threadId={}, userId={}, modelMs={}, totalMs={}, reportAvailable={}, ragApplied={}, explicitHospitalRequest={}",
+                medicalChatResult == null ? "" : medicalChatResult.threadId(),
+                medicalChatResult == null ? "" : medicalChatResult.userId(),
+                elapsedMillis(modelStartedAt, finishedAt),
+                elapsedMillis(startedAt, finishedAt),
+                medicalChatResult != null && medicalChatResult.effectiveReportAvailable(),
+                medicalChatResult != null && medicalChatResult.ragApplied(),
+                explicitHospitalRequest
+        );
     }
 
     private MedicalChatResult buildReportResult(String threadId, String userId) {
@@ -186,5 +256,9 @@ public class DefaultMedicalChatService implements MedicalChatService {
             return medicalAgentRuntime.createThreadId();
         }
         return threadId.trim();
+    }
+
+    private long elapsedMillis(long startNanos, long endNanos) {
+        return Math.max(0L, (endNanos - startNanos) / 1_000_000L);
     }
 }

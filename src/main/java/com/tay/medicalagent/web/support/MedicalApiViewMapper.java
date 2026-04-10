@@ -3,6 +3,7 @@ package com.tay.medicalagent.web.support;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
 import com.tay.medicalagent.app.chat.StructuredMedicalReply;
 import com.tay.medicalagent.app.rag.model.KnowledgeSource;
+import com.tay.medicalagent.app.report.MedicalReportBuildState;
 import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalHospitalRecommendation;
 import com.tay.medicalagent.app.report.MedicalHospitalRouteOption;
@@ -62,12 +63,71 @@ public class MedicalApiViewMapper {
         return toReportQueryResponse(medicalDiagnosisReport, MedicalHospitalPlanningSummary.empty());
     }
 
+    public ReportQueryResponse toReportQueryResponse(MedicalReportBuildState buildState) {
+        if (buildState == null) {
+            return new ReportQueryResponse(
+                    false,
+                    DEFAULT_REPORT_UNAVAILABLE_REASON,
+                    null,
+                    MedicalReportBuildState.STATUS_NOT_READY,
+                    MedicalReportBuildState.REASON_CODE_INSUFFICIENT_CONTEXT,
+                    null
+            );
+        }
+        if (MedicalReportBuildState.STATUS_GENERATING.equals(buildState.status())) {
+            return new ReportQueryResponse(
+                    false,
+                    safeText(buildState.reason()).isBlank() ? DEFAULT_REPORT_UNAVAILABLE_REASON : safeText(buildState.reason()),
+                    null,
+                    MedicalReportBuildState.STATUS_GENERATING,
+                    safeText(buildState.reasonCode()),
+                    buildState.retryAfterMs()
+            );
+        }
+
+        MedicalReportSnapshot snapshot = buildState.snapshot();
+        MedicalDiagnosisReport report = snapshot == null ? null : snapshot.report();
+        MedicalHospitalPlanningSummary planningSummary = snapshot == null
+                ? MedicalHospitalPlanningSummary.empty()
+                : snapshot.planningSummary();
+        if (MedicalReportBuildState.STATUS_READY.equals(buildState.status()) && report != null && report.shouldGenerateReport()) {
+            return new ReportQueryResponse(
+                    true,
+                    "",
+                    toReportView(report, planningSummary),
+                    MedicalReportBuildState.STATUS_READY,
+                    "",
+                    null
+            );
+        }
+
+        String reason = safeText(buildState.reason()).isBlank() ? DEFAULT_REPORT_UNAVAILABLE_REASON : safeText(buildState.reason());
+        String reasonCode = safeText(buildState.reasonCode()).isBlank()
+                ? MedicalReportBuildState.REASON_CODE_INSUFFICIENT_CONTEXT
+                : safeText(buildState.reasonCode());
+        return new ReportQueryResponse(
+                false,
+                reason,
+                null,
+                MedicalReportBuildState.STATUS_NOT_READY,
+                reasonCode,
+                buildState.retryAfterMs()
+        );
+    }
+
     public ReportQueryResponse toReportQueryResponse(
             MedicalDiagnosisReport medicalDiagnosisReport,
             MedicalHospitalPlanningSummary planningSummary
     ) {
         if (medicalDiagnosisReport == null) {
-            return new ReportQueryResponse(false, DEFAULT_REPORT_UNAVAILABLE_REASON, null);
+            return new ReportQueryResponse(
+                    false,
+                    DEFAULT_REPORT_UNAVAILABLE_REASON,
+                    null,
+                    MedicalReportBuildState.STATUS_NOT_READY,
+                    MedicalReportBuildState.REASON_CODE_INSUFFICIENT_CONTEXT,
+                    null
+            );
         }
 
         if (!medicalDiagnosisReport.shouldGenerateReport()) {
@@ -75,10 +135,24 @@ public class MedicalApiViewMapper {
             if (reason.isBlank()) {
                 reason = DEFAULT_REPORT_UNAVAILABLE_REASON;
             }
-            return new ReportQueryResponse(false, reason, null);
+            return new ReportQueryResponse(
+                    false,
+                    reason,
+                    null,
+                    MedicalReportBuildState.STATUS_NOT_READY,
+                    MedicalReportBuildState.REASON_CODE_INSUFFICIENT_CONTEXT,
+                    null
+            );
         }
 
-        return new ReportQueryResponse(true, "", toReportView(medicalDiagnosisReport, planningSummary));
+        return new ReportQueryResponse(
+                true,
+                "",
+                toReportView(medicalDiagnosisReport, planningSummary),
+                MedicalReportBuildState.STATUS_READY,
+                "",
+                null
+        );
     }
 
     public ReportViewDto toReportViewNullable(MedicalDiagnosisReport medicalDiagnosisReport) {
@@ -111,6 +185,7 @@ public class MedicalApiViewMapper {
                 safeText(effectivePlanning.routeStatusMessage()).isBlank()
                         ? (effectivePlanning.routesAvailable() ? "" : DEFAULT_ROUTE_UNAVAILABLE_MESSAGE)
                         : safeText(effectivePlanning.routeStatusMessage()),
+                safeText(effectivePlanning.routeStatusCode()),
                 DEFAULT_DISCLAIMER
         );
     }

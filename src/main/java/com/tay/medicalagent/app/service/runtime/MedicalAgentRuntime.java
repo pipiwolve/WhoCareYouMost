@@ -2,6 +2,7 @@ package com.tay.medicalagent.app.service.runtime;
 
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import reactor.core.publisher.Flux;
 
 /**
  * 医疗 Agent Runtime 抽象。
@@ -20,6 +21,17 @@ public interface MedicalAgentRuntime {
      * @throws GraphRunnerException Agent 执行失败时抛出
      */
     AssistantMessage doChatMessage(String prompt, String threadId, String userId) throws GraphRunnerException;
+
+    /**
+     * 以流式方式执行一次底层模型问答。
+     *
+     * @param prompt 用户输入
+     * @param threadId 会话线程 ID
+     * @param userId 用户唯一标识
+     * @return 模型实时文本分片
+     * @throws GraphRunnerException Agent 执行失败时抛出
+     */
+    Flux<String> streamChatText(String prompt, String threadId, String userId) throws GraphRunnerException;
 
     /**
      * 生成新的线程 ID。

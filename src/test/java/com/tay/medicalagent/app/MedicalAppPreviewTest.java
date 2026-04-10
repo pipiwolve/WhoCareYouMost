@@ -15,17 +15,18 @@ import com.tay.medicalagent.app.service.report.MedicalHospitalPlanningService;
 import com.tay.medicalagent.app.service.report.MedicalPlanningIntentResolver;
 import com.tay.medicalagent.app.service.report.MedicalReportPdfExportService;
 import com.tay.medicalagent.app.service.report.MedicalReportSnapshotService;
+import com.tay.medicalagent.app.service.report.ReportBuildCoordinator;
 import com.tay.medicalagent.app.service.report.ReportTriggerLevel;
+import com.tay.medicalagent.app.service.runtime.MedicalAgentRuntimePersistenceCleaner;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -44,6 +45,7 @@ class MedicalAppPreviewTest {
         MedicalReportSnapshotService medicalReportSnapshotService = mock(MedicalReportSnapshotService.class);
         MedicalPlanningIntentResolver medicalPlanningIntentResolver = mock(MedicalPlanningIntentResolver.class);
         MedicalChatPreviewReportFactory medicalChatPreviewReportFactory = mock(MedicalChatPreviewReportFactory.class);
+        ReportBuildCoordinator reportBuildCoordinator = mock(ReportBuildCoordinator.class);
 
         MedicalApp medicalApp = new MedicalApp(
                 medicalChatService,
@@ -54,7 +56,9 @@ class MedicalAppPreviewTest {
                 medicalHospitalPlanningService,
                 medicalReportSnapshotService,
                 medicalPlanningIntentResolver,
-                medicalChatPreviewReportFactory
+                medicalChatPreviewReportFactory,
+                reportBuildCoordinator,
+                mock(MedicalAgentRuntimePersistenceCleaner.class)
         );
 
         MedicalChatResult chatResult = new MedicalChatResult(
@@ -113,15 +117,10 @@ class MedicalAppPreviewTest {
                 .thenReturn(previewReport);
         when(medicalPlanningIntentResolver.resolve(previewReport, chatResult.structuredReply(), "帮我规划附近医院路线", ReportTriggerLevel.RECOMMENDED))
                 .thenReturn(planningIntent);
-        when(medicalReportSnapshotService.getOrCreateSnapshot(
-                "sess_preview",
-                "thread_preview",
-                "usr_preview",
-                null,
-                null,
-                previewReport,
-                planningIntent
-        )).thenReturn(snapshot);
+        when(medicalReportSnapshotService.captureContext("thread_preview", "usr_preview", null, null))
+                .thenReturn(new com.tay.medicalagent.app.report.MedicalReportContextSnapshot("conversation", "profile", "location"));
+        when(medicalHospitalPlanningService.plan(null, null, previewReport, planningIntent))
+                .thenReturn(MedicalHospitalPlanningSummary.empty());
 
         Optional<MedicalReportSnapshot> preview = medicalApp.prepareReportPreview(
                 "sess_preview",
@@ -134,16 +133,19 @@ class MedicalAppPreviewTest {
         );
 
         assertTrue(preview.isPresent());
+        assertEquals(snapshot.report(), preview.get().report());
+        assertEquals(snapshot.planningSummary(), preview.get().planningSummary());
         verify(medicalChatPreviewReportFactory).build("thread_preview", "usr_preview", "帮我规划附近医院路线", chatResult);
         verify(medicalChatService, never()).generateReportFromThread(any(), any());
-        verify(medicalReportSnapshotService).getOrCreateSnapshot(
-                eq("sess_preview"),
-                eq("thread_preview"),
-                eq("usr_preview"),
-                isNull(),
-                isNull(),
-                eq(previewReport),
-                eq(planningIntent)
+        verify(medicalHospitalPlanningService).plan(null, null, previewReport, planningIntent);
+        verify(medicalReportSnapshotService, never()).getOrCreateSnapshot(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.nullable(Double.class),
+                org.mockito.ArgumentMatchers.nullable(Double.class),
+                org.mockito.ArgumentMatchers.any(MedicalDiagnosisReport.class),
+                org.mockito.ArgumentMatchers.any(MedicalPlanningIntent.class)
         );
     }
 }

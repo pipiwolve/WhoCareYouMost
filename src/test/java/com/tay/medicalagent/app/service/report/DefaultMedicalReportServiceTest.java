@@ -17,11 +17,26 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class DefaultMedicalReportServiceTest {
+
+    @Test
+    void shouldTreatShortRiskLevelLabelAsReportAvailable() {
+        DefaultMedicalReportService service = new DefaultMedicalReportService(
+                mock(MedicalAiModelProvider.class),
+                mock(UserProfileService.class),
+                mock(ThreadConversationService.class)
+        );
+
+        ReportDecision decision = service.evaluateReportAvailability("风险等级：中\n核心判断：胸闷可能有多种原因");
+
+        assertTrue(decision.available());
+        assertEquals("当前回复已经形成风险判断或排查方向，可生成诊断报告。", decision.reason());
+    }
 
     @Test
     void shouldUseProfileNameAsReportTitleWhenGeneratingReport() {

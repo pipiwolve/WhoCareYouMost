@@ -1,6 +1,7 @@
 package com.tay.medicalagent.controller.v1;
 
 import com.tay.medicalagent.app.MedicalApp;
+import com.tay.medicalagent.app.report.MedicalReportBuildState;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
 import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalReportPdfFile;
@@ -25,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -69,13 +70,7 @@ class ReportControllerTest {
                 List.of(),
                 ""
         );
-        when(medicalApp.getOrCreateReportSnapshot(
-                consultationSession.sessionId(),
-                "thread_report_1",
-                "usr_report_1",
-                null,
-                null
-        )).thenReturn(new MedicalReportSnapshot(
+        MedicalReportSnapshot snapshot = new MedicalReportSnapshot(
                 consultationSession.sessionId(),
                 "thread_report_1",
                 "usr_report_1",
@@ -85,6 +80,17 @@ class ReportControllerTest {
                 "location",
                 report,
                 MedicalHospitalPlanningSummary.empty()
+        );
+        when(medicalApp.getFinalReportStatus(
+                consultationSession.sessionId(),
+                "thread_report_1",
+                "usr_report_1",
+                null,
+                null
+        )).thenReturn(MedicalReportBuildState.notReady(
+                snapshot,
+                "当前会话暂无足够问诊内容",
+                MedicalReportBuildState.REASON_CODE_INSUFFICIENT_CONTEXT
         ));
 
         mockMvc.perform(get("/v1/reports/{sessionId}", consultationSession.sessionId()))
@@ -92,6 +98,8 @@ class ReportControllerTest {
                 .andExpect(jsonPath("$.message").value("OK"))
                 .andExpect(jsonPath("$.data.ready").value(false))
                 .andExpect(jsonPath("$.data.reason").value("当前会话暂无足够问诊内容"))
+                .andExpect(jsonPath("$.data.status").value("not_ready"))
+                .andExpect(jsonPath("$.data.reasonCode").value("insufficient_context"))
                 .andExpect(jsonPath("$.data.report").value(nullValue()));
     }
 
@@ -111,13 +119,7 @@ class ReportControllerTest {
                 List.of("持续高热", "呼吸困难"),
                 "建议先观察"
         );
-        when(medicalApp.getOrCreateReportSnapshot(
-                consultationSession.sessionId(),
-                "thread_report_2",
-                "usr_report_2",
-                null,
-                null
-        )).thenReturn(new MedicalReportSnapshot(
+        MedicalReportSnapshot snapshot = new MedicalReportSnapshot(
                 consultationSession.sessionId(),
                 "thread_report_2",
                 "usr_report_2",
@@ -127,19 +129,97 @@ class ReportControllerTest {
                 "location",
                 report,
                 MedicalHospitalPlanningSummary.empty()
-        ));
+        );
+        when(medicalApp.getFinalReportStatus(
+                consultationSession.sessionId(),
+                "thread_report_2",
+                "usr_report_2",
+                null,
+                null
+        )).thenReturn(MedicalReportBuildState.ready(snapshot));
 
         mockMvc.perform(get("/v1/reports/{sessionId}", consultationSession.sessionId()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.message").value("OK"))
                 .andExpect(jsonPath("$.data.ready").value(true))
                 .andExpect(jsonPath("$.data.reason").value(""))
+                .andExpect(jsonPath("$.data.status").value("ready"))
+                .andExpect(jsonPath("$.data.reasonCode").value(""))
                 .andExpect(jsonPath("$.data.report.title").value("thread_report_2的医疗诊断报告"))
                 .andExpect(jsonPath("$.data.report.riskLevel").value("中风险"))
                 .andExpect(jsonPath("$.data.report.basis[0]").value("发热"))
                 .andExpect(jsonPath("$.data.report.recommendations[0]").value("补液休息"))
                 .andExpect(jsonPath("$.data.report.redFlags[0]").value("持续高热"))
+                .andExpect(jsonPath("$.data.report.routeStatusCode").value("none"))
                 .andExpect(jsonPath("$.data.report.disclaimer").value("本报告由AI生成，仅供参考，不能替代专业医生诊断。"));
+    }
+
+    @Test
+    void getReportShouldReturnGeneratingStatusWhenBuildTimesOut() throws Exception {
+        ConsultationSession consultationSession = consultationSessionService.createSession("usr_report_3", "thread_report_3");
+        when(medicalApp.getFinalReportStatus(
+                consultationSession.sessionId(),
+                "thread_report_3",
+                "usr_report_3",
+                null,
+                null
+        )).thenReturn(MedicalReportBuildState.generating(
+                "报告生成中，请稍后重试",
+                MedicalReportBuildState.REASON_CODE_REPORT_WAIT_TIMEOUT,
+                3000
+        ));
+
+        mockMvc.perform(get("/v1/reports/{sessionId}", consultationSession.sessionId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.ready").value(false))
+                .andExpect(jsonPath("$.data.status").value("generating"))
+                .andExpect(jsonPath("$.data.reason").value("报告生成中，请稍后重试"))
+                .andExpect(jsonPath("$.data.reasonCode").value("report_wait_timeout"))
+                .andExpect(jsonPath("$.data.retryAfterMs").value(3000))
+                .andExpect(jsonPath("$.data.report").value(nullValue()));
+    }
+
+    @Test
+    void getReportShouldKeepTopLevelReadyWhenLocationIsMissingInsideRouteState() throws Exception {
+        ConsultationSession consultationSession = consultationSessionService.createSession("usr_report_4", "thread_report_4");
+        MedicalDiagnosisReport report = new MedicalDiagnosisReport(
+                "thread_report_4的医疗诊断报告",
+                true,
+                "CONFIRMED",
+                "中风险",
+                "胸闷",
+                "建议尽快线下评估",
+                "",
+                List.of("胸闷"),
+                List.of("尽快线下评估"),
+                List.of("胸痛加重"),
+                "建议尽快线下评估"
+        );
+        MedicalReportSnapshot snapshot = new MedicalReportSnapshot(
+                consultationSession.sessionId(),
+                "thread_report_4",
+                "usr_report_4",
+                Instant.now(),
+                "conversation",
+                "profile",
+                "location",
+                report,
+                new MedicalHospitalPlanningSummary(List.of(), false, "未上传经纬度，无法进行就近医院规划", "location_missing")
+        );
+        when(medicalApp.getFinalReportStatus(
+                consultationSession.sessionId(),
+                "thread_report_4",
+                "usr_report_4",
+                null,
+                null
+        )).thenReturn(MedicalReportBuildState.ready(snapshot));
+
+        mockMvc.perform(get("/v1/reports/{sessionId}", consultationSession.sessionId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.ready").value(true))
+                .andExpect(jsonPath("$.data.status").value("ready"))
+                .andExpect(jsonPath("$.data.report.routeStatusCode").value("location_missing"))
+                .andExpect(jsonPath("$.data.report.routeStatusMessage").value("未上传经纬度，无法进行就近医院规划"));
     }
 
     @Test
@@ -233,6 +313,6 @@ class ReportControllerTest {
         assertEquals(31.23, updatedSession.latitude());
         assertEquals(121.47, updatedSession.longitude());
         assertNotNull(updatedSession.locationAuthorizedAt());
-        verifyNoInteractions(medicalApp);
+        verify(medicalApp).invalidateReportSnapshot(consultationSession.sessionId());
     }
 }

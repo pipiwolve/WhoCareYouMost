@@ -6,6 +6,9 @@ package com.tay.medicalagent.web.dto;
 public record ReportQueryResponse(
         boolean ready,
         String reason,
-        ReportViewDto report
+        ReportViewDto report,
+        String status,
+        String reasonCode,
+        Integer retryAfterMs
 ) {
 }

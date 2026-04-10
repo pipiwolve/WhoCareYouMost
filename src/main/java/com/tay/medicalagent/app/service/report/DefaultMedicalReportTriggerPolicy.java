@@ -38,6 +38,10 @@ public class DefaultMedicalReportTriggerPolicy implements MedicalReportTriggerPo
             "建议补充"
     );
 
+    private static final List<String> HIGH_RISK_ALIASES = List.of("高", "高风险");
+    private static final List<String> MEDIUM_RISK_ALIASES = List.of("中", "中风险");
+    private static final List<String> LOW_RISK_ALIASES = List.of("低", "低风险");
+
     @Override
     public ReportTriggerDecision evaluate(
             StructuredMedicalReply structuredMedicalReply,
@@ -60,7 +64,7 @@ public class DefaultMedicalReportTriggerPolicy implements MedicalReportTriggerPo
         boolean completeAssessment = hasSummary && hasBasis && hasNextSteps && hasEscalation;
         boolean looksIncomplete = looksIncomplete(reply, normalizedReply, completeAssessment);
 
-        if (isRiskLevel(reply, "中风险") && completeAssessment && !looksIncomplete) {
+        if (isRiskLevel(reply, MEDIUM_RISK_ALIASES) && completeAssessment && !looksIncomplete) {
             return new ReportTriggerDecision(ReportTriggerLevel.RECOMMENDED, RECOMMENDED_ACTION_TEXT);
         }
 
@@ -68,7 +72,7 @@ public class DefaultMedicalReportTriggerPolicy implements MedicalReportTriggerPo
             return new ReportTriggerDecision(ReportTriggerLevel.RECOMMENDED, RECOMMENDED_ACTION_TEXT);
         }
 
-        if (isRiskLevel(reply, "低风险")
+        if (isRiskLevel(reply, LOW_RISK_ALIASES)
                 && hasSummary
                 && hasBasis
                 && hasNextSteps
@@ -81,7 +85,7 @@ public class DefaultMedicalReportTriggerPolicy implements MedicalReportTriggerPo
     }
 
     private boolean isHighRisk(StructuredMedicalReply reply, String assistantReply) {
-        return isRiskLevel(reply, "高风险") || containsAny(assistantReply, URGENT_PHRASES);
+        return isRiskLevel(reply, HIGH_RISK_ALIASES) || containsAny(assistantReply, URGENT_PHRASES);
     }
 
     private boolean looksIncomplete(StructuredMedicalReply reply, String assistantReply, boolean completeAssessment) {
@@ -104,11 +108,20 @@ public class DefaultMedicalReportTriggerPolicy implements MedicalReportTriggerPo
         return count;
     }
 
-    private boolean isRiskLevel(StructuredMedicalReply reply, String expectedRiskLevel) {
-        if (reply == null || expectedRiskLevel == null) {
+    private boolean isRiskLevel(StructuredMedicalReply reply, List<String> expectedRiskLevels) {
+        if (reply == null || expectedRiskLevels == null || expectedRiskLevels.isEmpty()) {
             return false;
         }
-        return expectedRiskLevel.equals(normalizeText(reply.riskLevel()));
+        String normalizedActual = normalizeRiskLevel(reply.riskLevel());
+        if (normalizedActual.isBlank()) {
+            return false;
+        }
+        for (String expectedRiskLevel : expectedRiskLevels) {
+            if (normalizedActual.equals(normalizeRiskLevel(expectedRiskLevel))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean containsAny(String text, List<String> phrases) {
@@ -142,5 +155,15 @@ public class DefaultMedicalReportTriggerPolicy implements MedicalReportTriggerPo
 
     private String normalizeText(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private String normalizeRiskLevel(String value) {
+        String normalized = normalizeText(value);
+        return switch (normalized) {
+            case "高", "高风险" -> "高";
+            case "中", "中风险" -> "中";
+            case "低", "低风险" -> "低";
+            default -> normalized;
+        };
     }
 }

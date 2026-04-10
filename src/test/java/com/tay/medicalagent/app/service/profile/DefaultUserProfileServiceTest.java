@@ -1,7 +1,7 @@
 package com.tay.medicalagent.app.service.profile;
 
 import com.alibaba.cloud.ai.graph.store.stores.MemoryStore;
-import com.tay.medicalagent.app.repository.memory.MemoryStoreUserProfileRepository;
+import com.tay.medicalagent.app.repository.store.StoreBackedUserProfileRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -23,7 +23,7 @@ class DefaultUserProfileServiceTest {
                 "allergies", List.of("头孢")
         ));
         DefaultUserProfileService userProfileService = new DefaultUserProfileService(
-                new MemoryStoreUserProfileRepository(new MemoryStore()),
+                new StoreBackedUserProfileRepository(new MemoryStore()),
                 factExtractor
         );
 
@@ -45,7 +45,7 @@ class DefaultUserProfileServiceTest {
                 "gender", "女"
         ));
         DefaultUserProfileService userProfileService = new DefaultUserProfileService(
-                new MemoryStoreUserProfileRepository(new MemoryStore()),
+                new StoreBackedUserProfileRepository(new MemoryStore()),
                 factExtractor
         );
 
@@ -63,7 +63,7 @@ class DefaultUserProfileServiceTest {
     void shouldSkipLlmFallbackWhenNoProfileHintsExist() {
         RecordingFactExtractor factExtractor = new RecordingFactExtractor(Map.of("gender", "男"));
         DefaultUserProfileService userProfileService = new DefaultUserProfileService(
-                new MemoryStoreUserProfileRepository(new MemoryStore()),
+                new StoreBackedUserProfileRepository(new MemoryStore()),
                 factExtractor
         );
 

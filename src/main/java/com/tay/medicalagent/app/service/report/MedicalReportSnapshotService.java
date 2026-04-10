@@ -1,13 +1,31 @@
 package com.tay.medicalagent.app.service.report;
 
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalReportContextSnapshot;
 import com.tay.medicalagent.app.report.MedicalPlanningIntent;
 import com.tay.medicalagent.app.report.MedicalReportSnapshot;
+
+import java.util.Optional;
 
 /**
  * 冻结报告快照服务。
  */
 public interface MedicalReportSnapshotService {
+
+    Optional<MedicalReportSnapshot> findFreshSnapshot(
+            String sessionId,
+            String threadId,
+            String userId,
+            Double latitude,
+            Double longitude
+    );
+
+    MedicalReportContextSnapshot captureContext(
+            String threadId,
+            String userId,
+            Double latitude,
+            Double longitude
+    );
 
     MedicalReportSnapshot getOrCreateSnapshot(
             String sessionId,

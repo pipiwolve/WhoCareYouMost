@@ -1,6 +1,7 @@
 package com.tay.medicalagent.app.service.report;
 
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalReportContextSnapshot;
 import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalPlanningIntent;
 import com.tay.medicalagent.app.report.MedicalReportSnapshot;
@@ -21,6 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -40,6 +42,7 @@ public class DefaultMedicalReportSnapshotService implements MedicalReportSnapsho
     private final MedicalReportSnapshotProperties snapshotProperties;
     private final Clock clock;
     private final ConcurrentMap<String, SnapshotLockState> snapshotLocks = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Long> sessionGenerations = new ConcurrentHashMap<>();
     private volatile Instant lastLockCleanupAt = Instant.EPOCH;
 
     @Autowired
@@ -96,6 +99,33 @@ public class DefaultMedicalReportSnapshotService implements MedicalReportSnapsho
     }
 
     @Override
+    public Optional<MedicalReportSnapshot> findFreshSnapshot(
+            String sessionId,
+            String threadId,
+            String userId,
+            Double latitude,
+            Double longitude
+    ) {
+        MedicalReportSnapshot existingSnapshot = medicalReportSnapshotRepository.findBySessionId(sessionId).orElse(null);
+        if (existingSnapshot == null) {
+            return Optional.empty();
+        }
+        MedicalReportContextSnapshot contextSnapshot = captureContext(threadId, userId, latitude, longitude);
+        boolean fresh = existingSnapshot.isFresh(
+                contextSnapshot.conversationFingerprint(),
+                contextSnapshot.profileFingerprint(),
+                contextSnapshot.locationFingerprint()
+        );
+        if (!fresh) {
+            return Optional.empty();
+        }
+        if (shouldRetryDegradedPlanning(existingSnapshot, clock.instant())) {
+            return Optional.empty();
+        }
+        return Optional.of(existingSnapshot);
+    }
+
+    @Override
     public MedicalReportSnapshot getOrCreateSnapshot(
             String sessionId,
             String threadId,
@@ -118,6 +148,7 @@ public class DefaultMedicalReportSnapshotService implements MedicalReportSnapsho
             MedicalPlanningIntent planningIntent
     ) {
         String lockKey = normalize(sessionId, "unknown-session");
+        long sessionGeneration = currentSessionGeneration(lockKey);
         Instant now = clock.instant();
         cleanupStaleLocksIfNeeded(now);
         SnapshotLockState lockState = snapshotLocks.computeIfAbsent(lockKey, key -> new SnapshotLockState(new ReentrantLock(), now));
@@ -125,10 +156,10 @@ public class DefaultMedicalReportSnapshotService implements MedicalReportSnapsho
         ReentrantLock lock = lockState.lock();
         lock.lock();
         try {
-            List<Message> conversation = threadConversationService.getThreadConversation(threadId);
-            String conversationFingerprint = fingerprint(threadConversationService.buildConversationTranscript(conversation));
-            String profileFingerprint = fingerprint(userProfileService.buildProfileContext(userId));
-            String locationFingerprint = fingerprint(locationKey(latitude, longitude));
+            MedicalReportContextSnapshot contextSnapshot = captureContext(threadId, userId, latitude, longitude);
+            String conversationFingerprint = contextSnapshot.conversationFingerprint();
+            String profileFingerprint = contextSnapshot.profileFingerprint();
+            String locationFingerprint = contextSnapshot.locationFingerprint();
 
             MedicalReportSnapshot existingSnapshot = medicalReportSnapshotRepository.findBySessionId(sessionId).orElse(null);
             if (existingSnapshot != null && existingSnapshot.isFresh(conversationFingerprint, profileFingerprint, locationFingerprint)) {
@@ -143,7 +174,8 @@ public class DefaultMedicalReportSnapshotService implements MedicalReportSnapsho
                             conversationFingerprint,
                             profileFingerprint,
                             locationFingerprint,
-                            existingSnapshot
+                            existingSnapshot,
+                            sessionGeneration
                     );
                 }
                 return existingSnapshot;
@@ -167,7 +199,8 @@ public class DefaultMedicalReportSnapshotService implements MedicalReportSnapsho
                     conversationFingerprint,
                     profileFingerprint,
                     locationFingerprint,
-                    effectiveReport
+                    effectiveReport,
+                    sessionGeneration
             );
         }
         finally {
@@ -175,6 +208,21 @@ public class DefaultMedicalReportSnapshotService implements MedicalReportSnapsho
             lock.unlock();
             cleanupStaleLocksIfNeeded(clock.instant());
         }
+    }
+
+    @Override
+    public MedicalReportContextSnapshot captureContext(
+            String threadId,
+            String userId,
+            Double latitude,
+            Double longitude
+    ) {
+        List<Message> conversation = threadConversationService.getThreadConversation(threadId);
+        return new MedicalReportContextSnapshot(
+                fingerprint(threadConversationService.buildConversationTranscript(conversation)),
+                fingerprint(userProfileService.buildProfileContext(userId)),
+                fingerprint(locationKey(latitude, longitude))
+        );
     }
 
     private MedicalReportSnapshot buildAndSaveSnapshot(
@@ -187,7 +235,8 @@ public class DefaultMedicalReportSnapshotService implements MedicalReportSnapsho
             String conversationFingerprint,
             String profileFingerprint,
             String locationFingerprint,
-            MedicalDiagnosisReport report
+            MedicalDiagnosisReport report,
+            long sessionGeneration
     ) {
         MedicalPlanningIntent effectiveIntent = planningIntent == null
                 ? medicalPlanningIntentResolver.resolve(report)
@@ -207,8 +256,7 @@ public class DefaultMedicalReportSnapshotService implements MedicalReportSnapsho
                 report,
                 planningSummary
         );
-        medicalReportSnapshotRepository.save(snapshot);
-        return snapshot;
+        return saveIfSessionCurrent(sessionId, sessionGeneration, snapshot);
     }
 
     private MedicalReportSnapshot retryPlanningForFreshSnapshot(
@@ -221,7 +269,8 @@ public class DefaultMedicalReportSnapshotService implements MedicalReportSnapsho
             String conversationFingerprint,
             String profileFingerprint,
             String locationFingerprint,
-            MedicalReportSnapshot existingSnapshot
+            MedicalReportSnapshot existingSnapshot,
+            long sessionGeneration
     ) {
         MedicalDiagnosisReport report = existingSnapshot.report();
         if (report == null) {
@@ -244,14 +293,14 @@ public class DefaultMedicalReportSnapshotService implements MedicalReportSnapsho
                 report,
                 planningSummary
         );
-        medicalReportSnapshotRepository.save(refreshedSnapshot);
+        MedicalReportSnapshot effectiveSnapshot = saveIfSessionCurrent(sessionId, sessionGeneration, refreshedSnapshot);
         log.info(
                 "Retried degraded medical report planning on fresh snapshot. sessionId={}, previousStatus={}, newStatus={}",
                 normalize(sessionId, "unknown-session"),
                 existingSnapshot.planningSummary() == null ? "" : existingSnapshot.planningSummary().routeStatusCode(),
                 planningSummary.routeStatusCode()
         );
-        return refreshedSnapshot;
+        return effectiveSnapshot;
     }
 
     private MedicalDiagnosisReport resolveEffectiveReport(
@@ -301,14 +350,17 @@ public class DefaultMedicalReportSnapshotService implements MedicalReportSnapsho
 
     @Override
     public void invalidate(String sessionId) {
-        medicalReportSnapshotRepository.deleteBySessionId(sessionId);
-        snapshotLocks.remove(normalize(sessionId, "unknown-session"));
+        String normalizedSessionId = normalize(sessionId, "unknown-session");
+        sessionGenerations.merge(normalizedSessionId, 1L, Long::sum);
+        medicalReportSnapshotRepository.deleteBySessionId(normalizedSessionId);
+        snapshotLocks.remove(normalizedSessionId);
     }
 
     @Override
     public void clear() {
         medicalReportSnapshotRepository.clear();
         snapshotLocks.clear();
+        sessionGenerations.clear();
     }
 
     int snapshotLockCount() {
@@ -342,6 +394,23 @@ public class DefaultMedicalReportSnapshotService implements MedicalReportSnapsho
             return fallback;
         }
         return value.trim();
+    }
+
+    private MedicalReportSnapshot saveIfSessionCurrent(
+            String sessionId,
+            long sessionGeneration,
+            MedicalReportSnapshot snapshot
+    ) {
+        String normalizedSessionId = normalize(sessionId, "unknown-session");
+        if (currentSessionGeneration(normalizedSessionId) != sessionGeneration) {
+            return medicalReportSnapshotRepository.findBySessionId(normalizedSessionId).orElse(snapshot);
+        }
+        medicalReportSnapshotRepository.save(snapshot);
+        return snapshot;
+    }
+
+    private long currentSessionGeneration(String sessionId) {
+        return sessionGenerations.getOrDefault(normalize(sessionId, "unknown-session"), 0L);
     }
 
     private void cleanupStaleLocksIfNeeded(Instant now) {

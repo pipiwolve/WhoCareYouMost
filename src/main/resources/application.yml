@@ -1,6 +1,14 @@
 spring:
   application:
     name: MedicalAgent
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:127.0.0.1}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      username: ${SPRING_DATA_REDIS_USERNAME:}
+      password: ${SPRING_DATA_REDIS_PASSWORD:}
+      database: ${SPRING_DATA_REDIS_DATABASE:3}
+      timeout: ${SPRING_DATA_REDIS_TIMEOUT:5s}
   ai:
     model:
       embedding: none
@@ -42,6 +50,8 @@ spring:
     uris: ${MEDICAL_ES_URIS:http://localhost:9200}
     username: ${MEDICAL_ES_USERNAME:}
     password: ${MEDICAL_ES_PASSWORD:}
+    connection-timeout: ${MEDICAL_ES_CONNECTION_TIMEOUT:2s}
+    socket-timeout: ${MEDICAL_ES_SOCKET_TIMEOUT:5s}
 server:
   port: 8123
   servlet:
@@ -74,6 +84,16 @@ knife4j:
     language: zh_cn
 
 medical:
+  runtime:
+    environment: ${MEDICAL_RUNTIME_ENVIRONMENT:prod}
+  persistence:
+    store: ${MEDICAL_PERSISTENCE_STORE:redis}
+    redis:
+      key-prefix: ${MEDICAL_REDIS_KEY_PREFIX:medical-agent:}
+      session-ttl: ${MEDICAL_REDIS_SESSION_TTL:12h}
+      conversation-ttl: ${MEDICAL_REDIS_CONVERSATION_TTL:72h}
+      profile-ttl: ${MEDICAL_REDIS_PROFILE_TTL:720h}
+      snapshot-ttl: ${MEDICAL_REDIS_SNAPSHOT_TTL:30m}
   web:
     allowed-origins:
       - http://localhost:3000
@@ -121,6 +141,14 @@ medical:
       dataset-location: classpath:evaluation/medical-rag-eval.json
       top-k: 5
   report:
+    build:
+      query-wait-timeout: ${MEDICAL_REPORT_BUILD_QUERY_WAIT_TIMEOUT:5000ms}
+      retry-after-ms: ${MEDICAL_REPORT_BUILD_RETRY_AFTER_MS:3000}
+      executor:
+        thread-name-prefix: ${MEDICAL_REPORT_BUILD_EXECUTOR_THREAD_NAME_PREFIX:medical-report-build-}
+        core-pool-size: ${MEDICAL_REPORT_BUILD_EXECUTOR_CORE_POOL_SIZE:2}
+        max-pool-size: ${MEDICAL_REPORT_BUILD_EXECUTOR_MAX_POOL_SIZE:4}
+        queue-capacity: ${MEDICAL_REPORT_BUILD_EXECUTOR_QUEUE_CAPACITY:100}
     pdf:
       font-path: ${MEDICAL_REPORT_PDF_FONT_PATH:}
     snapshot:
@@ -132,9 +160,10 @@ medical:
     planning:
       enabled: true
       # mode: off|local|mcp|agentic
-      # Default to deterministic MCP for report queries. Agentic mode remains opt-in
-      # via env when we explicitly want the extra latency/variance tradeoff.
-      mode: ${MEDICAL_REPORT_PLANNING_MODE:mcp}
+      # Leave mode empty by default and resolve it from runtime environment:
+      # prod=mcp, gray=agentic, local=local. Explicit mode still wins.
+      mode: ${MEDICAL_REPORT_PLANNING_MODE:}
+      environment: ${MEDICAL_RUNTIME_ENVIRONMENT:prod}
       top-k: 3
       route-planning-enabled: true
       mcp:

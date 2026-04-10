@@ -51,4 +51,23 @@ class MedicalReplyFormatterTest {
         assertEquals("请先补充水分并注意休息。", normalizedReply.structuredReply().summary());
         assertTrue(normalizedReply.reply().contains("免责声明："));
     }
+
+    @Test
+    void shouldSplitConcatenatedLabelsIntoSeparateStructuredFields() {
+        String rawReply = """
+                风险等级：中核心判断：胸闷可能有多种原因，需进一步了解情况
+                主要依据：
+                - 胸闷是一个非特异性症状，可能与心脏、肺部或其他因素有关
+                建议下一步：
+                - 休息，避免剧烈运动
+                免责声明：本回答由AI生成，仅供健康信息参考，不能替代医生面诊。
+                """;
+
+        NormalizedMedicalReply normalizedReply = formatter.normalize(rawReply);
+
+        assertEquals("中", normalizedReply.structuredReply().riskLevel());
+        assertEquals("胸闷可能有多种原因，需进一步了解情况", normalizedReply.structuredReply().summary());
+        assertTrue(normalizedReply.reply().contains("风险等级：中\n\n核心判断：胸闷可能有多种原因，需进一步了解情况"));
+        assertFalse(normalizedReply.reply().contains("风险等级：中核心判断："));
+    }
 }

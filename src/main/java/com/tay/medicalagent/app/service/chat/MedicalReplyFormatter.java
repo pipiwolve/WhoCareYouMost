@@ -16,8 +16,13 @@ public class MedicalReplyFormatter {
 
     private static final Pattern CODE_FENCE_PATTERN = Pattern.compile("```+");
     private static final Pattern HEADING_PATTERN = Pattern.compile("(?m)^#{1,6}\\s*");
+    private static final String LABEL_TOKENS =
+            "风险等级|当前风险等级|核心判断|初步判断|初步评估|主要依据|判断依据|依据|建议下一步|下一步建议|建议|建议处理|处理建议|何时就医|何时必须升级就医|必须升级就医|需要补充|还需补充|需补充|补充信息|免责声明";
     private static final Pattern LABEL_PATTERN = Pattern.compile(
-            "^(风险等级|当前风险等级|核心判断|初步判断|初步评估|主要依据|判断依据|依据|建议下一步|下一步建议|建议|建议处理|处理建议|何时就医|何时必须升级就医|必须升级就医|需要补充|还需补充|需补充|补充信息|免责声明)[:：]\\s*(.*)$"
+            "^(" + LABEL_TOKENS + ")[:：]\\s*(.*)$"
+    );
+    private static final Pattern INLINE_LABEL_SPLIT_PATTERN = Pattern.compile(
+            "([^\\n])\\s*(" + LABEL_TOKENS + ")([:：])"
     );
 
     public NormalizedMedicalReply normalize(String rawReply) {
@@ -169,6 +174,7 @@ public class MedicalReplyFormatter {
         String text = rawReply.replace("\r\n", "\n").replace('\r', '\n');
         text = CODE_FENCE_PATTERN.matcher(text).replaceAll("");
         text = HEADING_PATTERN.matcher(text).replaceAll("");
+        text = INLINE_LABEL_SPLIT_PATTERN.matcher(text).replaceAll("$1\n$2$3");
         text = text.replace("**", "")
                 .replace("__", "")
                 .replace("`", "");

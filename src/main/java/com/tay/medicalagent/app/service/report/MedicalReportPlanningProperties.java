@@ -15,7 +15,13 @@ public class MedicalReportPlanningProperties {
     /**
      * 规划运行模式：off|local|mcp|agentic。
      */
-    private String mode = PlanningMode.MCP.name().toLowerCase();
+    private String mode = "";
+
+    /**
+     * 运行环境：prod|gray|local。
+     * 当 mode 未显式配置时，按环境回落到默认模式。
+     */
+    private String environment = "prod";
 
     private boolean modeConfigured;
 
@@ -54,6 +60,14 @@ public class MedicalReportPlanningProperties {
         this.modeConfigured = mode != null && !mode.isBlank();
     }
 
+    public String getEnvironment() {
+        return environment;
+    }
+
+    public void setEnvironment(String environment) {
+        this.environment = environment;
+    }
+
     public PlanningMode getResolvedMode() {
         if (!enabled) {
             return PlanningMode.OFF;
@@ -64,7 +78,7 @@ public class MedicalReportPlanningProperties {
         if (mcpEnabled != null || agentEnabled != null) {
             return resolveLegacyMode();
         }
-        return parseMode(mode);
+        return defaultModeForEnvironment(environment);
     }
 
     public int getTopK() {
@@ -129,6 +143,18 @@ public class MedicalReportPlanningProperties {
         catch (IllegalArgumentException ex) {
             return PlanningMode.OFF;
         }
+    }
+
+    private PlanningMode defaultModeForEnvironment(String candidate) {
+        if (candidate == null || candidate.isBlank()) {
+            return PlanningMode.MCP;
+        }
+        return switch (candidate.trim().toLowerCase()) {
+            case "local" -> PlanningMode.LOCAL;
+            case "gray" -> PlanningMode.AGENTIC;
+            case "prod" -> PlanningMode.MCP;
+            default -> PlanningMode.MCP;
+        };
     }
 
     public Mcp getMcp() {

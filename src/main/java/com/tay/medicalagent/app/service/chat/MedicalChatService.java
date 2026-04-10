@@ -2,6 +2,7 @@ package com.tay.medicalagent.app.service.chat;
 
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
+import com.tay.medicalagent.app.chat.MedicalChatStreamingSession;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
 import org.springframework.ai.chat.messages.AssistantMessage;
 
@@ -22,6 +23,17 @@ public interface MedicalChatService {
      * @throws GraphRunnerException Agent 执行失败时抛出
      */
     MedicalChatResult doChat(String prompt, String threadId, String userId) throws GraphRunnerException;
+
+    /**
+     * 以流式方式执行一次完整的医疗问答。
+     *
+     * @param prompt 用户输入
+     * @param threadId 会话线程 ID，可为空
+     * @param userId 用户唯一标识，可为空
+     * @return 流式文本片段与结束后的统一结果
+     * @throws GraphRunnerException Agent 执行失败时抛出
+     */
+    MedicalChatStreamingSession streamChat(String prompt, String threadId, String userId) throws GraphRunnerException;
 
     /**
      * 执行一次聊天，并在需要时返回结构化报告。

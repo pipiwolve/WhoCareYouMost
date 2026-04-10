@@ -2,10 +2,13 @@ package com.tay.medicalagent.app;
 
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
+import com.tay.medicalagent.app.chat.MedicalChatStreamingSession;
 import com.tay.medicalagent.app.rag.store.MedicalRagContextHolder;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalReportBuildState;
 import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalPlanningIntent;
+import com.tay.medicalagent.app.report.MedicalReportContextSnapshot;
 import com.tay.medicalagent.app.report.MedicalReportPdfFile;
 import com.tay.medicalagent.app.report.MedicalReportSnapshot;
 import com.tay.medicalagent.app.service.chat.MedicalChatService;
@@ -16,10 +19,13 @@ import com.tay.medicalagent.app.service.report.MedicalChatPreviewReportFactory;
 import com.tay.medicalagent.app.service.report.MedicalPlanningIntentResolver;
 import com.tay.medicalagent.app.service.report.MedicalReportPdfExportService;
 import com.tay.medicalagent.app.service.report.MedicalReportSnapshotService;
+import com.tay.medicalagent.app.service.report.ReportBuildCoordinator;
 import com.tay.medicalagent.app.service.report.ReportTriggerLevel;
+import com.tay.medicalagent.app.service.runtime.MedicalAgentRuntimePersistenceCleaner;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 
@@ -41,6 +47,8 @@ public class MedicalApp {
     private final MedicalReportSnapshotService medicalReportSnapshotService;
     private final MedicalPlanningIntentResolver medicalPlanningIntentResolver;
     private final MedicalChatPreviewReportFactory medicalChatPreviewReportFactory;
+    private final ReportBuildCoordinator reportBuildCoordinator;
+    private final MedicalAgentRuntimePersistenceCleaner medicalAgentRuntimePersistenceCleaner;
 
     public MedicalApp(
             MedicalChatService medicalChatService,
@@ -51,7 +59,9 @@ public class MedicalApp {
             MedicalHospitalPlanningService medicalHospitalPlanningService,
             MedicalReportSnapshotService medicalReportSnapshotService,
             MedicalPlanningIntentResolver medicalPlanningIntentResolver,
-            MedicalChatPreviewReportFactory medicalChatPreviewReportFactory
+            MedicalChatPreviewReportFactory medicalChatPreviewReportFactory,
+            ReportBuildCoordinator reportBuildCoordinator,
+            MedicalAgentRuntimePersistenceCleaner medicalAgentRuntimePersistenceCleaner
     ) {
         this.medicalChatService = medicalChatService;
         this.userProfileService = userProfileService;
@@ -62,6 +72,8 @@ public class MedicalApp {
         this.medicalReportSnapshotService = medicalReportSnapshotService;
         this.medicalPlanningIntentResolver = medicalPlanningIntentResolver;
         this.medicalChatPreviewReportFactory = medicalChatPreviewReportFactory;
+        this.reportBuildCoordinator = reportBuildCoordinator;
+        this.medicalAgentRuntimePersistenceCleaner = medicalAgentRuntimePersistenceCleaner;
     }
 
     /**
@@ -98,6 +110,20 @@ public class MedicalApp {
      */
     public MedicalChatResult doChat(String prompt, String threadId, String userId) throws GraphRunnerException {
         return medicalChatService.doChat(prompt, threadId, userId);
+    }
+
+    /**
+     * 在指定线程和用户上下文下发起一次流式聊天。
+     *
+     * @param prompt 用户输入
+     * @param threadId 会话线程 ID
+     * @param userId 用户唯一标识
+     * @return 流式文本片段及最终统一结果
+     * @throws GraphRunnerException Agent 运行失败时抛出
+     */
+    public MedicalChatStreamingSession streamChat(String prompt, String threadId, String userId)
+            throws GraphRunnerException {
+        return medicalChatService.streamChat(prompt, threadId, userId);
     }
 
     /**
@@ -217,19 +243,20 @@ public class MedicalApp {
             Double latitude,
             Double longitude
     ) {
-        MedicalReportSnapshot snapshot = medicalReportSnapshotService.getOrCreateSnapshot(
+        MedicalReportBuildState buildState = reportBuildCoordinator.getOrStartFinalReport(
                 normalizeSessionId(sessionId),
                 threadId,
                 userId,
                 latitude,
                 longitude
         );
+        MedicalReportSnapshot snapshot = buildState == null ? null : buildState.snapshot();
         return medicalReportPdfExportService.exportReportPdf(
                 sessionId,
                 threadId,
                 userId,
-                snapshot.report(),
-                snapshot.planningSummary()
+                snapshot == null ? null : snapshot.report(),
+                snapshot == null ? MedicalHospitalPlanningSummary.empty() : snapshot.planningSummary()
         );
     }
 
@@ -255,6 +282,31 @@ public class MedicalApp {
                 latitude,
                 longitude
         );
+    }
+
+    public MedicalReportBuildState getFinalReportStatus(
+            String sessionId,
+            String threadId,
+            String userId,
+            Double latitude,
+            Double longitude
+    ) {
+        return reportBuildCoordinator.getOrStartFinalReport(
+                normalizeSessionId(sessionId),
+                threadId,
+                userId,
+                latitude,
+                longitude
+        );
+    }
+
+    public MedicalReportContextSnapshot captureReportPreviewContext(
+            String threadId,
+            String userId,
+            Double latitude,
+            Double longitude
+    ) {
+        return medicalReportSnapshotService.captureContext(threadId, userId, latitude, longitude);
     }
 
     public Optional<MedicalReportSnapshot> prepareReportPreview(
@@ -288,6 +340,18 @@ public class MedicalApp {
                         ? ReportTriggerLevel.NONE
                         : medicalChatResult.reportTriggerLevel()
         );
+        if (explicitHospitalRequest) {
+            return Optional.of(buildInlinePreviewSnapshot(
+                    sessionId,
+                    threadId,
+                    userId,
+                    latitude,
+                    longitude,
+                    report,
+                    planningIntent
+            ));
+        }
+
         return Optional.of(medicalReportSnapshotService.getOrCreateSnapshot(
                 normalizeSessionId(sessionId),
                 threadId,
@@ -299,12 +363,44 @@ public class MedicalApp {
         ));
     }
 
+    public void warmUpFinalReport(
+            String sessionId,
+            String prompt,
+            String threadId,
+            String userId,
+            Double latitude,
+            Double longitude,
+            MedicalChatResult medicalChatResult
+    ) {
+        if (medicalPlanningIntentResolver.isExplicitHospitalRequest(prompt)) {
+            return;
+        }
+        if (!medicalPlanningIntentResolver.shouldPrepareChatPreview(prompt, medicalChatResult)) {
+            return;
+        }
+        MedicalDiagnosisReport providedReport = medicalChatResult != null
+                && medicalChatResult.reportGenerated()
+                && medicalChatResult.report() != null
+                ? medicalChatResult.report()
+                : null;
+        reportBuildCoordinator.warmUpFinalReport(
+                normalizeSessionId(sessionId),
+                threadId,
+                userId,
+                latitude,
+                longitude,
+                providedReport
+        );
+    }
+
     public boolean isExplicitHospitalPlanningRequest(String prompt) {
         return medicalPlanningIntentResolver.isExplicitHospitalRequest(prompt);
     }
 
     public void invalidateReportSnapshot(String sessionId) {
-        medicalReportSnapshotService.invalidate(normalizeSessionId(sessionId));
+        String normalizedSessionId = normalizeSessionId(sessionId);
+        medicalReportSnapshotService.invalidate(normalizedSessionId);
+        reportBuildCoordinator.invalidateSession(normalizedSessionId);
     }
 
     /**
@@ -333,10 +429,11 @@ public class MedicalApp {
      * 包括用户画像、线程对话、RAG 上下文与底层 Agent Runtime 缓存。
      */
     public void clearMemory() {
-        userProfileService.clearMemory();
         threadConversationService.clearConversations();
         medicalRagContextHolder.clear();
         medicalReportSnapshotService.clear();
+        reportBuildCoordinator.clear();
+        medicalAgentRuntimePersistenceCleaner.clearAll();
         medicalChatService.resetRuntime();
     }
 
@@ -367,5 +464,39 @@ public class MedicalApp {
             return medicalChatPreviewReportFactory.build(threadId, userId, prompt, medicalChatResult);
         }
         return medicalChatService.generateReportFromThread(threadId, userId);
+    }
+
+    private MedicalReportSnapshot buildInlinePreviewSnapshot(
+            String sessionId,
+            String threadId,
+            String userId,
+            Double latitude,
+            Double longitude,
+            MedicalDiagnosisReport report,
+            MedicalPlanningIntent planningIntent
+    ) {
+        MedicalReportContextSnapshot contextSnapshot = medicalReportSnapshotService.captureContext(
+                threadId,
+                userId,
+                latitude,
+                longitude
+        );
+        MedicalHospitalPlanningSummary planningSummary = medicalHospitalPlanningService.plan(
+                latitude,
+                longitude,
+                report,
+                planningIntent
+        );
+        return new MedicalReportSnapshot(
+                normalizeSessionId(sessionId),
+                threadId == null || threadId.isBlank() ? "current-thread" : threadId.trim(),
+                userId == null || userId.isBlank() ? "anonymous" : userId.trim(),
+                Instant.now(),
+                contextSnapshot == null ? "" : contextSnapshot.conversationFingerprint(),
+                contextSnapshot == null ? "" : contextSnapshot.profileFingerprint(),
+                contextSnapshot == null ? "" : contextSnapshot.locationFingerprint(),
+                report,
+                planningSummary
+        );
     }
 }

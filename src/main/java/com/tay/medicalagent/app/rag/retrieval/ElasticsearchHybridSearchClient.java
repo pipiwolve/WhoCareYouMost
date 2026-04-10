@@ -53,25 +53,31 @@ public class ElasticsearchHybridSearchClient {
     }
 
     public List<Document> search(String normalizedQuery) {
-        List<Document> vectorDocuments = vectorSearch(normalizedQuery);
-        if (log.isDebugEnabled()) {
-            log.debug(
-                    "Hybrid retrieval vector phase completed. query={}, candidateCount={}, candidates={}",
-                    normalizedQuery,
-                    vectorDocuments.size(),
-                    summarizeDocuments(vectorDocuments)
-            );
-        }
-
         RestClient restClient = restClientProvider.getIfAvailable();
-        if (restClient == null) {
+        List<Document> vectorDocuments = List.of();
+        try {
+            vectorDocuments = vectorSearch(normalizedQuery);
             if (log.isDebugEnabled()) {
-                log.debug("Hybrid retrieval lexical phase skipped because RestClient is unavailable. query={}", normalizedQuery);
+                log.debug(
+                        "Hybrid retrieval vector phase completed. query={}, candidateCount={}, candidates={}",
+                        normalizedQuery,
+                        vectorDocuments.size(),
+                        summarizeDocuments(vectorDocuments)
+                );
             }
-            return limit(vectorDocuments);
+        }
+        catch (RuntimeException ex) {
+            log.warn("Elasticsearch hybrid vector search failed, fallback to lexical-only retrieval", ex);
         }
 
         try {
+            if (restClient == null) {
+                if (log.isDebugEnabled()) {
+                    log.debug("Hybrid retrieval lexical phase skipped because RestClient is unavailable. query={}", normalizedQuery);
+                }
+                return limit(vectorDocuments);
+            }
+
             List<Document> lexicalDocuments = lexicalSearch(restClient, normalizedQuery);
             if (log.isDebugEnabled()) {
                 log.debug(

@@ -17,7 +17,9 @@ import org.springframework.test.web.servlet.MvcResult;
 import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -98,12 +100,7 @@ class MedicalReportEndToEndLiveIT {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.message").value("OK"));
 
-        MvcResult reportResult = mockMvc.perform(get("/v1/reports/{sessionId}", sessionId))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.message").value("OK"))
-                .andExpect(jsonPath("$.data.ready").value(true))
-                .andExpect(jsonPath("$.data.report.title").isNotEmpty())
-                .andReturn();
+        MvcResult reportResult = awaitReadyReport(sessionId);
 
         JsonNode reportBody = objectMapper.readTree(reportResult.getResponse().getContentAsString());
         assertFalse(reportBody.path("data").path("report").path("hospitals").isEmpty());
@@ -112,5 +109,36 @@ class MedicalReportEndToEndLiveIT {
                 .andExpect(status().isOk())
                 .andExpect(content().contentType("application/pdf"))
                 .andExpect(content().string(containsString("%PDF")));
+    }
+
+    private MvcResult awaitReadyReport(String sessionId) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+        MvcResult lastResult = null;
+
+        while (System.nanoTime() < deadline) {
+            lastResult = mockMvc.perform(get("/v1/reports/{sessionId}", sessionId))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.message").value("OK"))
+                    .andReturn();
+
+            JsonNode body = objectMapper.readTree(lastResult.getResponse().getContentAsString());
+            JsonNode data = body.path("data");
+            if (data.path("ready").asBoolean(false)) {
+                assertEquals("ready", data.path("status").asText());
+                assertTrue(data.path("report").path("title").isTextual());
+                assertFalse(data.path("report").path("title").asText().isBlank());
+                return lastResult;
+            }
+
+            long retryAfterMs = Math.max(500L, data.path("retryAfterMs").asLong(1000L));
+            Thread.sleep(Math.min(retryAfterMs, 3000L));
+        }
+
+        if (lastResult == null) {
+            throw new AssertionError("Report query did not return a response");
+        }
+
+        JsonNode lastBody = objectMapper.readTree(lastResult.getResponse().getContentAsString());
+        throw new AssertionError("Report was not ready before timeout. lastPayload=" + lastBody);
     }
 }

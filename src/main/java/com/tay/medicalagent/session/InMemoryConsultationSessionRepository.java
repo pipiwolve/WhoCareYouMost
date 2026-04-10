@@ -1,5 +1,6 @@
 package com.tay.medicalagent.session;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
@@ -7,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 @Repository
+@ConditionalOnProperty(prefix = "medical.persistence", name = "store", havingValue = "memory", matchIfMissing = true)
 /**
  * 内存态问诊会话仓储。
  * <p>

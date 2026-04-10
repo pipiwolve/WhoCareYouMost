@@ -54,6 +54,25 @@ class DefaultMedicalReportTriggerPolicyTest {
     }
 
     @Test
+    void shouldReturnRecommendedForShortMediumRiskLabelWithCompleteAssessment() {
+        ReportTriggerDecision decision = policy.evaluate(
+                new StructuredMedicalReply(
+                        "中",
+                        "考虑呼吸道感染",
+                        List.of("发热", "咳嗽"),
+                        List.of("补液休息"),
+                        List.of("持续高热"),
+                        List.of(),
+                        "免责声明"
+                ),
+                "风险等级：中\n核心判断：考虑呼吸道感染",
+                conversation("我发烧两天了")
+        );
+
+        assertEquals(ReportTriggerLevel.RECOMMENDED, decision.level());
+    }
+
+    @Test
     void shouldReturnNoneForLowRiskWhenConversationTooShort() {
         ReportTriggerDecision decision = policy.evaluate(
                 new StructuredMedicalReply(

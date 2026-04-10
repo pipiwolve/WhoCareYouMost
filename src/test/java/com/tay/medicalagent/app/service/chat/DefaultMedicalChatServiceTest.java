@@ -12,6 +12,7 @@ import com.tay.medicalagent.app.service.report.ReportTriggerLevel;
 import com.tay.medicalagent.app.service.runtime.MedicalAgentRuntime;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import reactor.core.publisher.Flux;
 
 import java.util.List;
 
@@ -144,5 +145,80 @@ class DefaultMedicalChatServiceTest {
         assertFalse(result.reportAvailable());
         assertEquals(ReportTriggerLevel.NONE, result.reportTriggerLevel());
         assertEquals("", result.reportActionText());
+    }
+
+    @Test
+    void streamChatShouldAggregateRuntimeDeltasIntoFinalResult() throws Exception {
+        MedicalAgentRuntime medicalAgentRuntime = mock(MedicalAgentRuntime.class);
+        ThreadConversationService threadConversationService = mock(ThreadConversationService.class);
+        MedicalReportService medicalReportService = mock(MedicalReportService.class);
+        MedicalReportTriggerPolicy medicalReportTriggerPolicy = mock(MedicalReportTriggerPolicy.class);
+        UserProfileService userProfileService = mock(UserProfileService.class);
+        MedicalRagContextHolder medicalRagContextHolder = new MedicalRagContextHolder();
+        MedicalReplyFormatter medicalReplyFormatter = mock(MedicalReplyFormatter.class);
+        MedicalPlanningIntentResolver medicalPlanningIntentResolver = mock(MedicalPlanningIntentResolver.class);
+
+        DefaultMedicalChatService service = new DefaultMedicalChatService(
+                medicalAgentRuntime,
+                threadConversationService,
+                medicalReportService,
+                medicalReportTriggerPolicy,
+                userProfileService,
+                medicalRagContextHolder,
+                medicalReplyFormatter,
+                medicalPlanningIntentResolver
+        );
+
+        StructuredMedicalReply structuredReply = StructuredMedicalReply.empty("本回答由AI生成，仅供健康信息参考，不能替代医生面诊。");
+        when(userProfileService.normalizeUserId("usr_stream")).thenReturn("usr_stream");
+        when(medicalReportService.isReportRequest("我胸闷")).thenReturn(false);
+        when(medicalAgentRuntime.streamChatText("我胸闷", "thread_stream", "usr_stream"))
+                .thenReturn(Flux.just("建议尽快", "线下评估。"));
+        when(medicalReplyFormatter.normalize("建议尽快线下评估。"))
+                .thenReturn(new NormalizedMedicalReply("建议尽快线下评估。", structuredReply));
+        when(threadConversationService.getThreadConversation("thread_stream")).thenReturn(List.of());
+        when(medicalReportTriggerPolicy.evaluate(structuredReply, "建议尽快线下评估。", List.of()))
+                .thenReturn(ReportTriggerDecision.none());
+        when(medicalPlanningIntentResolver.isExplicitHospitalRequest("我胸闷")).thenReturn(false);
+
+        var session = service.streamChat("我胸闷", "thread_stream", "usr_stream");
+        String streamedReply = session.deltas().collectList().map(parts -> String.join("", parts)).block();
+        var result = session.finalResult().block();
+
+        assertEquals("建议尽快线下评估。", streamedReply);
+        assertEquals("建议尽快线下评估。", result.reply());
+        assertFalse(result.reportAvailable());
+    }
+
+    @Test
+    void streamChatShouldUseSingleSyntheticChunkForReportRequest() throws Exception {
+        MedicalAgentRuntime medicalAgentRuntime = mock(MedicalAgentRuntime.class);
+        ThreadConversationService threadConversationService = mock(ThreadConversationService.class);
+        MedicalReportService medicalReportService = mock(MedicalReportService.class);
+        MedicalReportTriggerPolicy medicalReportTriggerPolicy = mock(MedicalReportTriggerPolicy.class);
+        UserProfileService userProfileService = mock(UserProfileService.class);
+        MedicalRagContextHolder medicalRagContextHolder = new MedicalRagContextHolder();
+        MedicalReplyFormatter medicalReplyFormatter = mock(MedicalReplyFormatter.class);
+        MedicalPlanningIntentResolver medicalPlanningIntentResolver = mock(MedicalPlanningIntentResolver.class);
+
+        DefaultMedicalChatService service = new DefaultMedicalChatService(
+                medicalAgentRuntime,
+                threadConversationService,
+                medicalReportService,
+                medicalReportTriggerPolicy,
+                userProfileService,
+                medicalRagContextHolder,
+                medicalReplyFormatter,
+                medicalPlanningIntentResolver
+        );
+
+        when(userProfileService.normalizeUserId("usr_report")).thenReturn("usr_report");
+        when(medicalReportService.isReportRequest("帮我生成报告")).thenReturn(true);
+        when(threadConversationService.getThreadConversation("thread_report")).thenReturn(List.of());
+
+        var session = service.streamChat("帮我生成报告", "thread_report", "usr_report");
+
+        assertEquals(List.of("当前线程暂无足够对话内容，无法生成诊断报告。"), session.deltas().collectList().block());
+        assertEquals("当前线程暂无足够对话内容，无法生成诊断报告。", session.finalResult().block().reply());
     }
 }

@@ -1,4 +1,8 @@
 medical:
+  runtime:
+    environment: local
+  persistence:
+    store: memory
   rag:
     vector-store:
       type: simple
@@ -6,4 +10,4 @@ medical:
       strategy: vector
   report:
     planning:
-      mode: local
+      environment: local

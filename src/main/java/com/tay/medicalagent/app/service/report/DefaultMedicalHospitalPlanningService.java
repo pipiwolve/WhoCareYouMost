@@ -47,8 +47,14 @@ public class DefaultMedicalHospitalPlanningService implements MedicalHospitalPla
             MedicalDiagnosisReport report,
             MedicalPlanningIntent planningIntent
     ) {
+        long startedAt = System.nanoTime();
         MedicalReportPlanningProperties.PlanningMode planningMode = planningProperties.getResolvedMode();
         if (!planningProperties.isEnabled() || planningMode == MedicalReportPlanningProperties.PlanningMode.OFF) {
+            log.info(
+                    "Medical report planning skipped because service is disabled. mode={}, totalMs={}",
+                    planningMode.name().toLowerCase(),
+                    elapsedMillis(startedAt, System.nanoTime())
+            );
             return new MedicalHospitalPlanningSummary(List.of(), false, "医院规划服务未启用", "disabled");
         }
         if (report == null || !report.shouldGenerateReport()) {
@@ -63,10 +69,20 @@ public class DefaultMedicalHospitalPlanningService implements MedicalHospitalPla
         }
 
         if (latitude == null || longitude == null) {
+            log.info(
+                    "Medical report planning skipped because location is missing. profileId={}, totalMs={}",
+                    effectiveIntent.profileId(),
+                    elapsedMillis(startedAt, System.nanoTime())
+            );
             return new MedicalHospitalPlanningSummary(List.of(), false, "未上传经纬度，无法进行就近医院规划", "location_missing");
         }
 
         if (planningMode == MedicalReportPlanningProperties.PlanningMode.LOCAL) {
+            log.info(
+                    "Medical report planning uses local fallback directly. profileId={}, totalMs={}",
+                    effectiveIntent.profileId(),
+                    elapsedMillis(startedAt, System.nanoTime())
+            );
             return buildLocalFallback(latitude, longitude, effectiveIntent, "路线能力未启用", "route_disabled");
         }
 
@@ -76,27 +92,30 @@ public class DefaultMedicalHospitalPlanningService implements MedicalHospitalPla
                     .orElse(null);
             if (isUsableAgentSummary(agentSummary)) {
                 log.info(
-                        "Medical report planning uses agentic MCP result. profileId={}, routesAvailable={}, routeStatusCode={}, hospitalCount={}",
+                        "Medical report planning uses agentic MCP result. profileId={}, routesAvailable={}, routeStatusCode={}, hospitalCount={}, totalMs={}",
                         effectiveIntent.profileId(),
                         agentSummary.routesAvailable(),
                         agentSummary.routeStatusCode(),
-                        agentSummary.hospitals() == null ? 0 : agentSummary.hospitals().size()
+                        agentSummary.hospitals() == null ? 0 : agentSummary.hospitals().size(),
+                        elapsedMillis(startedAt, System.nanoTime())
                 );
                 return agentSummary;
             }
             if (agentSummary != null) {
                 log.warn(
-                        "Medical report planning agentic MCP returned inconsistent result, deterministic MCP fallback will be used. profileId={}, routeStatusCode={}, hospitalCount={}",
+                        "Medical report planning agentic MCP returned inconsistent result, deterministic MCP fallback will be used. profileId={}, routeStatusCode={}, hospitalCount={}, totalMs={}",
                         effectiveIntent.profileId(),
                         agentSummary.routeStatusCode(),
-                        agentSummary.hospitals() == null ? 0 : agentSummary.hospitals().size()
+                        agentSummary.hospitals() == null ? 0 : agentSummary.hospitals().size(),
+                        elapsedMillis(startedAt, System.nanoTime())
                 );
             }
             else {
                 log.warn(
-                        "Medical report planning agentic MCP returned empty result, deterministic MCP fallback will be used. profileId={}, topK={}",
+                        "Medical report planning agentic MCP returned empty result, deterministic MCP fallback will be used. profileId={}, topK={}, totalMs={}",
                         effectiveIntent.profileId(),
-                        effectiveIntent.topK()
+                        effectiveIntent.topK(),
+                        elapsedMillis(startedAt, System.nanoTime())
                 );
             }
         }
@@ -108,24 +127,32 @@ public class DefaultMedicalHospitalPlanningService implements MedicalHospitalPla
                     .orElse(null);
             if (mcpSummary != null) {
                 log.info(
-                        "Medical report planning uses MCP result. profileId={}, routesAvailable={}, routeStatusCode={}, hospitalCount={}",
+                        "Medical report planning uses MCP result. profileId={}, routesAvailable={}, routeStatusCode={}, hospitalCount={}, totalMs={}",
                         effectiveIntent.profileId(),
                         mcpSummary.routesAvailable(),
                         mcpSummary.routeStatusCode(),
-                        mcpSummary.hospitals() == null ? 0 : mcpSummary.hospitals().size()
+                        mcpSummary.hospitals() == null ? 0 : mcpSummary.hospitals().size(),
+                        elapsedMillis(startedAt, System.nanoTime())
                 );
                 return mcpSummary;
             }
 
             log.warn(
-                    "Medical report planning MCP returned empty result, local fallback will be used. serverName={}, profileId={}, topK={}, hasLocation={}",
+                    "Medical report planning MCP returned empty result, local fallback will be used. serverName={}, profileId={}, topK={}, hasLocation={}, totalMs={}",
                     planningProperties.getMcp().getServerName(),
                     effectiveIntent.profileId(),
                     effectiveIntent.topK(),
-                    true
+                    true,
+                    elapsedMillis(startedAt, System.nanoTime())
             );
         }
 
+        log.info(
+                "Medical report planning falls back to local hospital list. profileId={}, routeStatusCode={}, totalMs={}",
+                effectiveIntent.profileId(),
+                "mcp_unavailable",
+                elapsedMillis(startedAt, System.nanoTime())
+        );
         return buildLocalFallback(
                 latitude,
                 longitude,
@@ -249,5 +276,9 @@ public class DefaultMedicalHospitalPlanningService implements MedicalHospitalPla
             return fallback;
         }
         return value.trim();
+    }
+
+    private long elapsedMillis(long startNanos, long endNanos) {
+        return Math.max(0L, (endNanos - startNanos) / 1_000_000L);
     }
 }

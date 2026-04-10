@@ -25,7 +25,8 @@ class MedicalReportPlanningCompatibilityLogger {
     @PostConstruct
     void logDeprecatedFlagsIfNeeded() {
         log.info(
-                "Medical report planning mode resolved. configuredMode={}, resolvedMode={}, routePlanningEnabled={}, mcpServerName={}",
+                "Medical report planning mode resolved. environment={}, configuredMode={}, resolvedMode={}, routePlanningEnabled={}, mcpServerName={}",
+                planningProperties.getEnvironment(),
                 planningProperties.getMode(),
                 planningProperties.getResolvedMode().name().toLowerCase(),
                 planningProperties.isRoutePlanningEnabled(),

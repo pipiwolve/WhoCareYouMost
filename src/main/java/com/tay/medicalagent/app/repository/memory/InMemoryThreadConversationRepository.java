@@ -1,6 +1,7 @@
 package com.tay.medicalagent.app.repository.memory;
 
 import com.tay.medicalagent.app.repository.ThreadConversationRepository;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.stereotype.Repository;
 
@@ -10,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 @Repository
+@ConditionalOnProperty(prefix = "medical.persistence", name = "store", havingValue = "memory", matchIfMissing = true)
 /**
  * 线程对话仓储的内存实现。
  * <p>

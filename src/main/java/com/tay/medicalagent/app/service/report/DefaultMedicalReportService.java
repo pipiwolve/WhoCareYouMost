@@ -30,6 +30,8 @@ public class DefaultMedicalReportService implements MedicalReportService {
 
     private static final Pattern REPORT_REQUEST_PATTERN =
             Pattern.compile(".*(生成|整理|导出|输出|给我|帮我做).{0,8}(诊断报告|医疗报告|分诊报告|报告|总结).*");
+    private static final Pattern RISK_LEVEL_PATTERN =
+            Pattern.compile("(当前)?风险等级[:：]\\s*(高|中|低)(风险)?");
 
     private final MedicalAiModelProvider medicalAiModelProvider;
     private final UserProfileService userProfileService;
@@ -68,7 +70,8 @@ public class DefaultMedicalReportService implements MedicalReportService {
             return new ReportDecision(true, "当前回复已识别较高风险或明确升级就医条件，可生成诊断报告。");
         }
 
-        if (containsAny(normalizedReply, "当前风险等级", "高风险", "中风险", "低风险", "需排查", "警惕", "考虑")) {
+        if (RISK_LEVEL_PATTERN.matcher(normalizedReply).find()
+                || containsAny(normalizedReply, "当前风险等级", "高风险", "中风险", "低风险", "需排查", "警惕", "考虑")) {
             return new ReportDecision(true, "当前回复已经形成风险判断或排查方向，可生成诊断报告。");
         }
 
@@ -77,15 +80,37 @@ public class DefaultMedicalReportService implements MedicalReportService {
 
     @Override
     public MedicalDiagnosisReport generateReportFromThread(String threadId, String userId) {
+        long startedAt = System.nanoTime();
         String effectiveThreadId = normalizeThreadId(threadId);
         String effectiveUserId = userProfileService.normalizeUserId(userId);
 
         List<Message> conversation = threadConversationService.getThreadConversation(effectiveThreadId);
         if (conversation.isEmpty()) {
-            return fallbackReport("", effectiveThreadId, effectiveUserId, "当前线程暂无足够对话内容，无法生成诊断报告。", false);
+            MedicalDiagnosisReport report = fallbackReport(
+                    "",
+                    effectiveThreadId,
+                    effectiveUserId,
+                    "当前线程暂无足够对话内容，无法生成诊断报告。",
+                    false
+            );
+            log.info(
+                    "Medical report skipped because conversation is empty. threadId={}, userId={}, totalMs={}",
+                    effectiveThreadId,
+                    effectiveUserId,
+                    elapsedMillis(startedAt, System.nanoTime())
+            );
+            return report;
         }
 
-        return generateMedicalDiagnosisReport(conversation, effectiveThreadId, effectiveUserId);
+        MedicalDiagnosisReport report = generateMedicalDiagnosisReport(conversation, effectiveThreadId, effectiveUserId);
+        log.info(
+                "Medical report generated. threadId={}, userId={}, shouldGenerateReport={}, totalMs={}",
+                effectiveThreadId,
+                effectiveUserId,
+                report != null && report.shouldGenerateReport(),
+                elapsedMillis(startedAt, System.nanoTime())
+        );
+        return report;
     }
 
     private MedicalDiagnosisReport generateMedicalDiagnosisReport(List<Message> conversation, String chatId, String userId) {
@@ -266,5 +291,9 @@ public class DefaultMedicalReportService implements MedicalReportService {
             return "当前线程";
         }
         return threadId.trim();
+    }
+
+    private long elapsedMillis(long startNanos, long endNanos) {
+        return Math.max(0L, (endNanos - startNanos) / 1_000_000L);
     }
 }

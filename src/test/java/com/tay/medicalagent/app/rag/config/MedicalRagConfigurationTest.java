@@ -1,5 +1,6 @@
 package com.tay.medicalagent.app.rag.config;
 
+import com.tay.medicalagent.app.config.MedicalRuntimeProperties;
 import org.elasticsearch.client.RestClient;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.embedding.EmbeddingModel;
@@ -18,7 +19,9 @@ class MedicalRagConfigurationTest {
 
     @Test
     void shouldFallbackToSimpleVectorStoreWhenElasticsearchStartupConnectionFails() {
-        MedicalRagConfiguration configuration = new MedicalRagConfiguration() {
+        MedicalRuntimeProperties runtimeProperties = new MedicalRuntimeProperties();
+        runtimeProperties.setEnvironment("local");
+        MedicalRagConfiguration configuration = new MedicalRagConfiguration(runtimeProperties) {
             @Override
             VectorStore buildElasticsearchVectorStore(
                     RestClient restClient,
@@ -50,7 +53,9 @@ class MedicalRagConfigurationTest {
 
     @Test
     void shouldFailFastWhenElasticsearchStartupFallbackDisabled() {
-        MedicalRagConfiguration configuration = new MedicalRagConfiguration() {
+        MedicalRuntimeProperties runtimeProperties = new MedicalRuntimeProperties();
+        runtimeProperties.setEnvironment("local");
+        MedicalRagConfiguration configuration = new MedicalRagConfiguration(runtimeProperties) {
             @Override
             VectorStore buildElasticsearchVectorStore(
                     RestClient restClient,
@@ -73,6 +78,38 @@ class MedicalRagConfigurationTest {
                 mock(RestClient.class),
                 mock(EmbeddingModel.class),
             beanFactory.getBeanProvider(EmbeddingModel.class),
+                medicalRagProperties,
+                elasticsearchProperties
+        ));
+    }
+
+    @Test
+    void shouldFailFastOutsideLocalEnvironmentEvenWhenFallbackEnabled() {
+        MedicalRuntimeProperties runtimeProperties = new MedicalRuntimeProperties();
+        runtimeProperties.setEnvironment("prod");
+        MedicalRagConfiguration configuration = new MedicalRagConfiguration(runtimeProperties) {
+            @Override
+            VectorStore buildElasticsearchVectorStore(
+                    RestClient restClient,
+                    EmbeddingModel embeddingModel,
+                    MedicalRagElasticsearchProperties elasticsearchProperties
+            ) {
+                throw new IllegalStateException(new ConnectException("Connection refused"));
+            }
+        };
+
+        MedicalRagProperties medicalRagProperties = new MedicalRagProperties();
+        medicalRagProperties.getVectorStore().getElasticsearch().setFallbackToSimpleOnStartupFailure(true);
+        MedicalRagElasticsearchProperties elasticsearchProperties = new MedicalRagElasticsearchProperties();
+        EmbeddingModel testEmbeddingModel = mock(EmbeddingModel.class);
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory(
+                Map.of("testEmbeddingModel", testEmbeddingModel)
+        );
+
+        assertThrows(IllegalStateException.class, () -> configuration.elasticsearchMedicalVectorStore(
+                mock(RestClient.class),
+                mock(EmbeddingModel.class),
+                beanFactory.getBeanProvider(EmbeddingModel.class),
                 medicalRagProperties,
                 elasticsearchProperties
         ));

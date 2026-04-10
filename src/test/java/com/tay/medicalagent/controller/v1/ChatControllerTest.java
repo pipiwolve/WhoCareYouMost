@@ -3,8 +3,10 @@ package com.tay.medicalagent.controller.v1;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.tay.medicalagent.app.MedicalApp;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
+import com.tay.medicalagent.app.chat.MedicalChatStreamingSession;
 import com.tay.medicalagent.app.chat.StructuredMedicalReply;
 import com.tay.medicalagent.app.rag.model.KnowledgeSource;
+import com.tay.medicalagent.app.report.MedicalReportContextSnapshot;
 import com.tay.medicalagent.app.service.model.MedicalModelConfigurationException;
 import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalReportSnapshot;
@@ -21,12 +23,15 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.time.Instant;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -207,13 +212,82 @@ class ChatControllerTest {
                                 """.formatted(consultationSession.sessionId())))
                 .andExpect(status().isOk());
 
-        org.mockito.Mockito.verify(medicalApp, org.mockito.Mockito.timeout(1000)).prepareReportPreview(
+        org.mockito.Mockito.verify(medicalApp, org.mockito.Mockito.timeout(1000)).warmUpFinalReport(
                 consultationSession.sessionId(),
                 "请帮我总结一下",
                 "thread_preview",
                 "usr_preview",
                 null,
                 null,
+                medicalChatResult
+        );
+    }
+
+    @Test
+    void completeJsonShouldWarmReportPreviewAsyncWithLatestSessionLocation() throws Exception {
+        ConsultationSession consultationSession = consultationSessionService.createSession("usr_preview_latest", "thread_preview_latest");
+        StructuredMedicalReply structuredReply = new StructuredMedicalReply(
+                "低风险",
+                "建议观察。",
+                List.of("信息较完整"),
+                List.of("观察症状"),
+                List.of("症状加重"),
+                List.of(),
+                "本回答由AI生成，仅供健康信息参考，不能替代医生面诊。"
+        );
+        MedicalChatResult medicalChatResult = new MedicalChatResult(
+                "thread_preview_latest",
+                "usr_preview_latest",
+                "建议观察。",
+                true,
+                "当前问诊信息较完整，可按需生成诊断报告。",
+                ReportTriggerLevel.SUGGESTED,
+                "当前问诊信息较完整，可按需生成诊断报告。",
+                false,
+                null,
+                false,
+                List.of(),
+                structuredReply
+        );
+        CountDownLatch chatStarted = new CountDownLatch(1);
+        CountDownLatch continueChat = new CountDownLatch(1);
+        when(medicalApp.doChat("请帮我总结一下", "thread_preview_latest", "usr_preview_latest"))
+                .thenAnswer(invocation -> {
+                    chatStarted.countDown();
+                    assertTrue(continueChat.await(1, TimeUnit.SECONDS));
+                    return medicalChatResult;
+                });
+
+        CompletableFuture<Void> requestFuture = CompletableFuture.runAsync(() -> {
+            try {
+                mockMvc.perform(post("/v1/chat/completions")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .accept(MediaType.APPLICATION_JSON)
+                                .content("""
+                                        {
+                                          "sessionId": "%s",
+                                          "message": "请帮我总结一下"
+                                        }
+                                        """.formatted(consultationSession.sessionId())))
+                        .andExpect(status().isOk());
+            }
+            catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+        });
+
+        assertTrue(chatStarted.await(1, TimeUnit.SECONDS));
+        consultationSessionService.updateLocation(consultationSession.sessionId(), 31.23, 121.47, true);
+        continueChat.countDown();
+        requestFuture.get(1, TimeUnit.SECONDS);
+
+        org.mockito.Mockito.verify(medicalApp, org.mockito.Mockito.timeout(1000)).warmUpFinalReport(
+                consultationSession.sessionId(),
+                "请帮我总结一下",
+                "thread_preview_latest",
+                "usr_preview_latest",
+                31.23,
+                121.47,
                 medicalChatResult
         );
     }
@@ -271,6 +345,86 @@ class ChatControllerTest {
                 .andExpect(jsonPath("$.data.reportPreview.routesAvailable").value(true))
                 .andExpect(jsonPath("$.data.reportPreview.hospitals[0].routes[0].steps[0]").value("步行200米到达医院"))
                 .andExpect(jsonPath("$.data.reply").value(org.hamcrest.Matchers.containsString("已为您规划附近医院路线，请查看下方推荐医院和路线。")));
+    }
+
+    @Test
+    void completeJsonShouldUseLatestSessionCoordinatesForInlineHospitalPreview() throws Exception {
+        ConsultationSession consultationSession = consultationSessionService.createSession("usr_route_inline_latest", "thread_route_inline_latest");
+        StructuredMedicalReply structuredReply = new StructuredMedicalReply(
+                "中风险",
+                "胸闷伴心慌，建议尽快线下评估。",
+                List.of("胸闷", "心慌"),
+                List.of("尽快线下评估"),
+                List.of("胸痛加重"),
+                List.of(),
+                "本回答由AI生成，仅供健康信息参考，不能替代医生面诊。"
+        );
+        MedicalChatResult medicalChatResult = new MedicalChatResult(
+                "thread_route_inline_latest",
+                "usr_route_inline_latest",
+                "建议尽快线下评估。",
+                true,
+                "已按您的请求准备附近医院路线，可查看详情。",
+                ReportTriggerLevel.RECOMMENDED,
+                "已按您的请求准备附近医院路线，可查看详情。",
+                false,
+                null,
+                false,
+                List.of(),
+                structuredReply
+        );
+        CountDownLatch chatStarted = new CountDownLatch(1);
+        CountDownLatch continueChat = new CountDownLatch(1);
+        when(medicalApp.doChat("帮我规划附近医院路线", "thread_route_inline_latest", "usr_route_inline_latest"))
+                .thenAnswer(invocation -> {
+                    chatStarted.countDown();
+                    assertTrue(continueChat.await(1, TimeUnit.SECONDS));
+                    return medicalChatResult;
+                });
+        when(medicalApp.isExplicitHospitalPlanningRequest("帮我规划附近医院路线")).thenReturn(true);
+        when(medicalApp.prepareReportPreview(
+                consultationSession.sessionId(),
+                "帮我规划附近医院路线",
+                "thread_route_inline_latest",
+                "usr_route_inline_latest",
+                31.23,
+                121.47,
+                medicalChatResult
+        )).thenReturn(Optional.of(reportPreviewSnapshot("ok", true)));
+
+        CompletableFuture<Void> requestFuture = CompletableFuture.runAsync(() -> {
+            try {
+                mockMvc.perform(post("/v1/chat/completions")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .accept(MediaType.APPLICATION_JSON)
+                                .content("""
+                                        {
+                                          "sessionId": "%s",
+                                          "message": "帮我规划附近医院路线"
+                                        }
+                                        """.formatted(consultationSession.sessionId())))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.reportPreview.routesAvailable").value(true));
+            }
+            catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+        });
+
+        assertTrue(chatStarted.await(1, TimeUnit.SECONDS));
+        consultationSessionService.updateLocation(consultationSession.sessionId(), 31.23, 121.47, true);
+        continueChat.countDown();
+        requestFuture.get(1, TimeUnit.SECONDS);
+
+        verify(medicalApp).prepareReportPreview(
+                consultationSession.sessionId(),
+                "帮我规划附近医院路线",
+                "thread_route_inline_latest",
+                "usr_route_inline_latest",
+                31.23,
+                121.47,
+                medicalChatResult
+        );
     }
 
     @Test
@@ -397,6 +551,63 @@ class ChatControllerTest {
     }
 
     @Test
+    void completeJsonShouldDropAsyncWarmUpWhenConversationContextChanges() throws Exception {
+        ConsultationSession consultationSession = consultationSessionService.createSession("usr_stale", "thread_stale");
+        StructuredMedicalReply structuredReply = new StructuredMedicalReply(
+                "低风险",
+                "建议观察。",
+                List.of("信息较完整"),
+                List.of("观察症状"),
+                List.of("症状加重"),
+                List.of(),
+                "本回答由AI生成，仅供健康信息参考，不能替代医生面诊。"
+        );
+        MedicalChatResult medicalChatResult = new MedicalChatResult(
+                "thread_stale",
+                "usr_stale",
+                "建议观察。",
+                true,
+                "当前问诊信息较完整，可按需生成诊断报告。",
+                ReportTriggerLevel.SUGGESTED,
+                "当前问诊信息较完整，可按需生成诊断报告。",
+                false,
+                null,
+                false,
+                List.of(),
+                structuredReply
+        );
+        when(medicalApp.doChat("请帮我总结一下", "thread_stale", "usr_stale")).thenReturn(medicalChatResult);
+        when(medicalApp.captureReportPreviewContext("thread_stale", "usr_stale", null, null))
+                .thenReturn(
+                        new MedicalReportContextSnapshot("conversation_v1", "profile_v1", "location_v1"),
+                        new MedicalReportContextSnapshot("conversation_v2", "profile_v1", "location_v1")
+                );
+
+        mockMvc.perform(post("/v1/chat/completions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "sessionId": "%s",
+                                  "message": "请帮我总结一下"
+                                }
+                                """.formatted(consultationSession.sessionId())))
+                .andExpect(status().isOk());
+
+        org.mockito.Mockito.verify(medicalApp, org.mockito.Mockito.timeout(1000).times(2))
+                .captureReportPreviewContext("thread_stale", "usr_stale", null, null);
+        org.mockito.Mockito.verify(medicalApp, org.mockito.Mockito.never()).warmUpFinalReport(
+                consultationSession.sessionId(),
+                "请帮我总结一下",
+                "thread_stale",
+                "usr_stale",
+                null,
+                null,
+                medicalChatResult
+        );
+    }
+
+    @Test
     void completeJsonShouldExposeModelConfigurationError() throws Exception {
         ConsultationSession consultationSession = consultationSessionService.createSession("usr_cfg", "thread_cfg");
         when(medicalApp.doChat("我头晕", "thread_cfg", "usr_cfg"))
@@ -445,7 +656,8 @@ class ChatControllerTest {
                 List.of(),
                 structuredReply
         );
-        when(medicalApp.doChat("我有点头晕", "thread_4", "usr_4")).thenReturn(medicalChatResult);
+        when(medicalApp.streamChat("我有点头晕", "thread_4", "usr_4"))
+                .thenReturn(streamingSession(medicalChatResult, "根据您的情况，", "建议多休息。"));
 
         MvcResult mvcResult = mockMvc.perform(post("/v1/chat/completions")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -505,7 +717,8 @@ class ChatControllerTest {
                         "本回答由AI生成，仅供健康信息参考，不能替代医生面诊。"
                 )
         );
-        when(medicalApp.doChat("帮我规划附近医院路线", "thread_stream_route", "usr_stream_route")).thenReturn(medicalChatResult);
+        when(medicalApp.streamChat("帮我规划附近医院路线", "thread_stream_route", "usr_stream_route"))
+                .thenReturn(streamingSession(medicalChatResult, "建议尽快", "线下评估。"));
         when(medicalApp.isExplicitHospitalPlanningRequest("帮我规划附近医院路线")).thenReturn(true);
         when(medicalApp.prepareReportPreview(
                 consultationSession.sessionId(),
@@ -572,7 +785,7 @@ class ChatControllerTest {
     @Test
     void completeStreamShouldExposeModelConfigurationError() throws Exception {
         ConsultationSession consultationSession = consultationSessionService.createSession("usr_cfg_2", "thread_cfg_2");
-        when(medicalApp.doChat("我头晕", "thread_cfg_2", "usr_cfg_2"))
+        when(medicalApp.streamChat("我头晕", "thread_cfg_2", "usr_cfg_2"))
                 .thenThrow(new MedicalModelConfigurationException(
                         "缺少 DashScope API Key，请配置 DASHSCOPE_API_KEY 或 AI_DASHSCOPE_API_KEY"
                 ));
@@ -627,7 +840,8 @@ class ChatControllerTest {
                 List.of(),
                 structuredReply
         );
-        when(medicalApp.doChat("我胸闷乏力", "thread_seq", "usr_seq")).thenReturn(medicalChatResult);
+        when(medicalApp.streamChat("我胸闷乏力", "thread_seq", "usr_seq"))
+                .thenReturn(streamingSession(medicalChatResult, "建议尽快线下评估", "，并注意观察症状变化。"));
         RecordingSink sink = new RecordingSink();
         ChatCompletionRequest request = new ChatCompletionRequest(consultationSession.sessionId(), "我胸闷乏力", null);
 
@@ -637,8 +851,8 @@ class ChatControllerTest {
 
         assertEquals(List.of("chunk", "chunk", "done"), sink.eventNames());
         assertTrue(sink.completed());
-        verify(medicalApp).doChat("我胸闷乏力", "thread_seq", "usr_seq");
-        org.mockito.Mockito.verify(medicalApp, org.mockito.Mockito.timeout(1000)).prepareReportPreview(
+        verify(medicalApp).streamChat("我胸闷乏力", "thread_seq", "usr_seq");
+        org.mockito.Mockito.verify(medicalApp, org.mockito.Mockito.timeout(1000)).warmUpFinalReport(
                 consultationSession.sessionId(),
                 "我胸闷乏力",
                 "thread_seq",
@@ -675,7 +889,8 @@ class ChatControllerTest {
                 List.of(),
                 structuredReply
         );
-        when(medicalApp.doChat("我有点头晕", "thread_chunk_fail", "usr_chunk_fail")).thenReturn(medicalChatResult);
+        when(medicalApp.streamChat("我有点头晕", "thread_chunk_fail", "usr_chunk_fail"))
+                .thenReturn(streamingSession(medicalChatResult, "建议多休息", "并观察。"));
 
         FailingSink sink = new FailingSink("chunk", 1);
         ChatCompletionRequest request = new ChatCompletionRequest(consultationSession.sessionId(), "我有点头晕", null);
@@ -689,7 +904,7 @@ class ChatControllerTest {
     @Test
     void emitStreamResponseShouldStopWithoutCompleteWhenErrorSendFails() throws Exception {
         ConsultationSession consultationSession = consultationSessionService.createSession("usr_error_fail", "thread_error_fail");
-        when(medicalApp.doChat("我胸闷", "thread_error_fail", "usr_error_fail"))
+        when(medicalApp.streamChat("我胸闷", "thread_error_fail", "usr_error_fail"))
                 .thenThrow(new GraphRunnerException("模型调用失败"));
 
         FailingSink sink = new FailingSink("error", 1);
@@ -805,5 +1020,9 @@ class ChatControllerTest {
                 ),
                 planningSummary
         );
+    }
+
+    private MedicalChatStreamingSession streamingSession(MedicalChatResult medicalChatResult, String... deltas) {
+        return new MedicalChatStreamingSession(Flux.fromArray(deltas), Mono.just(medicalChatResult));
     }
 }

@@ -94,7 +94,19 @@ public class MedicalRagAgentHook extends AgentHook {
                     threadId, searchQuery, enhancedQuery);
         }
 
-        RagContext ragContext = medicalKnowledgeRetriever.retrieve(enhancedQuery);
+        RagContext ragContext;
+        try {
+            ragContext = medicalKnowledgeRetriever.retrieve(enhancedQuery);
+        }
+        catch (RuntimeException ex) {
+            log.warn(
+                    "RAG hook retrieval failed, fallback to empty context. threadId={}, query={}",
+                    threadId,
+                    enhancedQuery,
+                    ex
+            );
+            ragContext = RagContext.empty(enhancedQuery);
+        }
         if (log.isDebugEnabled()) {
             log.debug(
                     "RAG hook retrieved context. threadId={}, applied={}, sourceCount={}",

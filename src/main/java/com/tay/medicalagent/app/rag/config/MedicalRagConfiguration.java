@@ -1,5 +1,6 @@
 package com.tay.medicalagent.app.rag.config;
 
+import com.tay.medicalagent.app.config.MedicalRuntimeProperties;
 import com.tay.medicalagent.app.rag.vectorstore.ElasticsearchBackedVectorStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +36,12 @@ public class MedicalRagConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(MedicalRagConfiguration.class);
 
+    private final MedicalRuntimeProperties medicalRuntimeProperties;
+
+    public MedicalRagConfiguration(MedicalRuntimeProperties medicalRuntimeProperties) {
+        this.medicalRuntimeProperties = medicalRuntimeProperties;
+    }
+
     @Bean
     @ConditionalOnProperty(prefix = "medical.rag.vector-store", name = "type", havingValue = "simple")
     public VectorStore simpleMedicalVectorStore(
@@ -61,12 +68,14 @@ public class MedicalRagConfiguration {
         }
         catch (RuntimeException ex) {
             if (!medicalRagProperties.getVectorStore().getElasticsearch().isFallbackToSimpleOnStartupFailure()
-                    || !isConnectionFailure(ex)) {
+                    || !isConnectionFailure(ex)
+                    || !medicalRuntimeProperties.isLocalLike()) {
                 throw ex;
             }
 
             log.warn(
-                    "Elasticsearch vector store startup failed, fallback to SimpleVectorStore. indexName={}, storeFile={}, reason={}",
+                    "Elasticsearch vector store startup failed, fallback to SimpleVectorStore. environment={}, indexName={}, storeFile={}, reason={}",
+                    medicalRuntimeProperties.resolvedEnvironment().value(),
                     elasticsearchProperties.getIndexName(),
                     medicalRagProperties.getVectorStore().getSimple().getStoreFile(),
                     summarizeFailure(ex)

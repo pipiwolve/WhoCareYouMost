@@ -1,6 +1,7 @@
 package com.tay.medicalagent.controller.v1;
 
 import com.tay.medicalagent.app.MedicalApp;
+import com.tay.medicalagent.app.report.MedicalReportBuildState;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
 import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalReportPdfFile;
@@ -55,36 +56,39 @@ public class ReportController {
     public ApiResponse<ReportQueryResponse> getReport(@PathVariable String sessionId) {
         log.info("Report query started. sessionId={}", sessionId);
         ConsultationSession consultationSession = consultationSessionService.getRequiredSession(sessionId);
-        MedicalReportSnapshot snapshot = medicalApp.getOrCreateReportSnapshot(
+        MedicalReportBuildState buildState = medicalApp.getFinalReportStatus(
                 sessionId,
                 consultationSession.threadId(),
                 consultationSession.userId(),
                 consultationSession.latitude(),
                 consultationSession.longitude()
         );
-        MedicalDiagnosisReport medicalDiagnosisReport = snapshot.report();
-        MedicalHospitalPlanningSummary planningSummary = snapshot.planningSummary();
+        MedicalReportSnapshot snapshot = buildState.snapshot();
+        MedicalDiagnosisReport medicalDiagnosisReport = snapshot == null ? null : snapshot.report();
+        MedicalHospitalPlanningSummary planningSummary = snapshot == null ? MedicalHospitalPlanningSummary.empty() : snapshot.planningSummary();
         log.info(
-                "Report query finished. sessionId={}, ready={}, hospitalCount={}, routesAvailable={}",
+                "Report query finished. sessionId={}, ready={}, status={}, hospitalCount={}, routesAvailable={}",
                 sessionId,
-                medicalDiagnosisReport != null && medicalDiagnosisReport.shouldGenerateReport(),
+                buildState.ready(),
+                buildState.status(),
                 planningSummary == null || planningSummary.hospitals() == null ? 0 : planningSummary.hospitals().size(),
                 planningSummary != null && planningSummary.routesAvailable()
         );
-        return ApiResponse.success(medicalApiViewMapper.toReportQueryResponse(medicalDiagnosisReport, planningSummary));
+        return ApiResponse.success(medicalApiViewMapper.toReportQueryResponse(buildState));
     }
 
-        @PostMapping(value = "/{sessionId}/location", consumes = MediaType.APPLICATION_JSON_VALUE)
-        public ApiResponse<Void> updateLocation(
+    @PostMapping(value = "/{sessionId}/location", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ApiResponse<Void> updateLocation(
             @PathVariable String sessionId,
             @Valid @RequestBody ReportLocationUpdateRequest request
-        ) {
+    ) {
         consultationSessionService.updateLocation(
-            sessionId,
-            request.latitude(),
-            request.longitude(),
-            Boolean.TRUE.equals(request.consentGranted())
+                sessionId,
+                request.latitude(),
+                request.longitude(),
+                Boolean.TRUE.equals(request.consentGranted())
         );
+        medicalApp.invalidateReportSnapshot(sessionId);
         log.info(
                 "Report location updated. sessionId={}, latitude={}, longitude={}",
                 sessionId,
@@ -92,7 +96,7 @@ public class ReportController {
                 request.longitude()
         );
         return ApiResponse.success(null);
-        }
+    }
 
     @GetMapping(value = "/{sessionId}/pdf", produces = MediaType.APPLICATION_PDF_VALUE)
     public ResponseEntity<byte[]> downloadReportPdf(@PathVariable String sessionId) {
@@ -101,9 +105,9 @@ public class ReportController {
         MedicalReportPdfFile pdfFile = medicalApp.exportReportPdf(
                 sessionId,
                 consultationSession.threadId(),
-            consultationSession.userId(),
-            consultationSession.latitude(),
-            consultationSession.longitude()
+                consultationSession.userId(),
+                consultationSession.latitude(),
+                consultationSession.longitude()
         );
         log.info("Report PDF download finished. sessionId={}, fileName={}, size={}", sessionId, pdfFile.fileName(), pdfFile.content().length);
         return ResponseEntity.ok()

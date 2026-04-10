@@ -16,6 +16,7 @@ public record ReportViewDto(
         List<HospitalPlanView> hospitals,
         boolean routesAvailable,
         String routeStatusMessage,
+        String routeStatusCode,
         String disclaimer
 ) {
 }

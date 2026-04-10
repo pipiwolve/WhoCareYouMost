@@ -6,6 +6,7 @@ import com.tay.medicalagent.app.MedicalApp;
 import com.tay.medicalagent.app.chat.MedicalChatResult;
 import com.tay.medicalagent.app.chat.StructuredMedicalReply;
 import com.tay.medicalagent.app.report.MedicalDiagnosisReport;
+import com.tay.medicalagent.app.report.MedicalReportBuildState;
 import com.tay.medicalagent.app.report.MedicalHospitalPlanningSummary;
 import com.tay.medicalagent.app.report.MedicalReportSnapshot;
 import com.tay.medicalagent.app.service.report.ReportTriggerLevel;
@@ -115,29 +116,30 @@ class MedicalApiFlowTest {
                 List.of("意识模糊"),
                 "建议观察"
         );
-        when(medicalApp.getOrCreateReportSnapshot(sessionId, "thread-flow-1", userId, null, null)).thenReturn(
-                new MedicalReportSnapshot(
-                        sessionId,
-                        "thread-flow-1",
-                        userId,
-                        Instant.now(),
-                        "conversation",
-                        "profile",
-                        "location",
-                        report,
-                        MedicalHospitalPlanningSummary.empty()
-                )
+        MedicalReportSnapshot snapshot = new MedicalReportSnapshot(
+                sessionId,
+                "thread-flow-1",
+                userId,
+                Instant.now(),
+                "conversation",
+                "profile",
+                "location",
+                report,
+                MedicalHospitalPlanningSummary.empty()
         );
+        when(medicalApp.getFinalReportStatus(sessionId, "thread-flow-1", userId, null, null))
+                .thenReturn(MedicalReportBuildState.ready(snapshot));
 
         mockMvc.perform(get("/v1/reports/{sessionId}", sessionId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.message").value("OK"))
                 .andExpect(jsonPath("$.data.ready").value(true))
                 .andExpect(jsonPath("$.data.reason").value(""))
+                .andExpect(jsonPath("$.data.status").value("ready"))
                 .andExpect(jsonPath("$.data.report.riskLevel").value("低风险"));
 
         verify(medicalApp).doChat("我头晕", "thread-flow-1", userId);
-        verify(medicalApp).getOrCreateReportSnapshot(sessionId, "thread-flow-1", userId, null, null);
+        verify(medicalApp).getFinalReportStatus(sessionId, "thread-flow-1", userId, null, null);
     }
 
     @Test
@@ -209,27 +211,29 @@ class MedicalApiFlowTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.message").value("OK"));
 
-        when(medicalApp.getOrCreateReportSnapshot(sessionId, "thread-flow-route", userId, 31.23, 121.47)).thenReturn(
-                previewSnapshot(
-                        sessionId,
-                        userId,
-                        new MedicalHospitalPlanningSummary(
-                                List.of(new com.tay.medicalagent.app.report.MedicalHospitalRecommendation(
-                                        "上海市第一人民医院",
-                                        "上海市虹口区武进路85号",
-                                        true,
-                                        1200,
-                                        List.of(new com.tay.medicalagent.app.report.MedicalHospitalRouteOption(
-                                                "WALK",
+        when(medicalApp.getFinalReportStatus(sessionId, "thread-flow-route", userId, 31.23, 121.47)).thenReturn(
+                MedicalReportBuildState.ready(
+                        previewSnapshot(
+                                sessionId,
+                                userId,
+                                new MedicalHospitalPlanningSummary(
+                                        List.of(new com.tay.medicalagent.app.report.MedicalHospitalRecommendation(
+                                                "上海市第一人民医院",
+                                                "上海市虹口区武进路85号",
+                                                true,
                                                 1200,
-                                                18,
-                                                "步行方案",
-                                                List.of("步行200米到达医院")
-                                        ))
-                                )),
-                                true,
-                                "",
-                                "ok"
+                                                List.of(new com.tay.medicalagent.app.report.MedicalHospitalRouteOption(
+                                                        "WALK",
+                                                        1200,
+                                                        18,
+                                                        "步行方案",
+                                                        List.of("步行200米到达医院")
+                                                ))
+                                        )),
+                                        true,
+                                        "",
+                                        "ok"
+                                )
                         )
                 )
         );
@@ -237,7 +241,9 @@ class MedicalApiFlowTest {
         mockMvc.perform(get("/v1/reports/{sessionId}", sessionId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.ready").value(true))
+                .andExpect(jsonPath("$.data.status").value("ready"))
                 .andExpect(jsonPath("$.data.report.routesAvailable").value(true))
+                .andExpect(jsonPath("$.data.report.routeStatusCode").value("ok"))
                 .andExpect(jsonPath("$.data.report.hospitals[0].routes[0].steps[0]").value("步行200米到达医院"));
     }
 
